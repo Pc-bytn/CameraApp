@@ -1,0 +1,9 @@
+{
+  "name": "cameraapp",
+  "version": "1.0.0",
+  "description": "Cordova Camera Preview App",
+  "main": "www/index.html",
+  "scripts": {},
+  "author": "",
+  "license": "MIT"
+}

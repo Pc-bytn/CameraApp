@@ -1,0 +1,42 @@
+/* Basic layout for camera preview and capture button */
+body, html {
+    margin: 0;
+    padding: 0;
+    width: 100vw;
+    height: 100vh;
+    background: #222;
+    font-family: Arial, sans-serif;
+}
+#camera-container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+#capture-btn {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 12px 28px;
+    font-size: 18px;
+    background: #0078d7;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    cursor: pointer;
+}
+#captured-img {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: 90vw;
+    max-height: 40vh;
+    border: 2px solid #fff;
+    border-radius: 8px;
+    z-index: 20;
+    background: #000;
+}

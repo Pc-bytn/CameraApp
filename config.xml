@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8'?>
+<widget id="com.example.cameraapp" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+    <name>CameraApp</name>
+    <description>Cordova Camera Preview App</description>
+    <author email="" href="">Your Name</author>
+    <content src="index.html" />
+    <access origin="*" />
+    <preference name="android-minSdkVersion" value="22" />
+    <platform name="android" />
+    <plugin name="cordova-plugin-camera-preview" spec="^0.13.0" />
+    <allow-intent href="http://*/*" />
+    <allow-intent href="https://*/*" />
+    <allow-intent href="tel:*" />
+    <allow-intent href="sms:*" />
+    <allow-intent href="mailto:*" />
+    <allow-intent href="geo:*" />
+    <platform name="android">
+        <allow-intent href="market:*" />
+    </platform>
+</widget>
