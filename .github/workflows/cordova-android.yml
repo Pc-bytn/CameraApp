@@ -30,20 +30,20 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
+      # - name: Install Android SDK
+      #   uses: android-actions/setup-android@v3
 
       - name: Install project dependencies
         run: npm install || echo "No npm dependencies"
 
       - name: Add Android platform
-        run: cordova platform add android
+        run: cordova platform add android@latest;
 
       - name: Add Camera Preview plugin
-        run: cordova plugin add cordova-plugin-camera-preview
+        run: cordova plugin add cordova-plugin-camera-preview@0.13.0
 
       - name: Build Android APK
-        run: cordova build android --release -- --packageType=apk
+        run: cordova build android 
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
