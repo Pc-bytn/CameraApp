@@ -43,7 +43,7 @@ jobs:
         run: cordova plugin add cordova-plugin-camera-preview
 
       - name: Build Android APK
-        run: cordova build android --release
+        run: cordova build android --release -- --packageType=apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
