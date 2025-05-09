@@ -1,7 +1,7 @@
 // --- WebRTC Globals ---
 let localStream;
 let peerConnection;
-const signalingServerUrl = 'https://streamrout.digitrans.lk/sys/signaling.php'; // TODO: Replace with your actual PHP server URL
+const signalingServerUrl = 'https://YOUR_PHP_BACKEND_URL/signaling.php'; // TODO: Replace with your actual PHP server URL
 let sessionId; // To identify this specific WebRTC session
 
 const peerConnectionConfig = {
