@@ -37,9 +37,7 @@ jobs:
         run: npm install || echo "No npm dependencies"
 
       - name: Add Android platform
-        run: |
-          cordova platform remove android
-          cordova platform add android@latest
+        run: cordova platform add android@latest
 
       - name: Add required plugins
         run: |
