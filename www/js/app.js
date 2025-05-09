@@ -84,36 +84,61 @@ async function startWebRTCStream() {
     }
     alert('Starting WebRTC stream setup...');
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        peerConnection = new RTCPeerConnection(peerConnectionConfig);
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-        peerConnection.onicecandidate = event => {
-            if (event.candidate) {
-                sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId });
+        // First check if we have permission to access the camera
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            // Set constraints specifically for mobile devices
+            const constraints = {
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    facingMode: 'environment' // Use the back camera by default
+                },
+                audio: true
+            };
+            
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            } catch (mediaError) {
+                console.error('Initial getUserMedia error:', mediaError);
+                // Try with simpler constraints if the detailed ones fail
+                try {
+                    alert('Trying simplified camera access...');
+                    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                } catch (fallbackError) {
+                    console.error('Fallback getUserMedia error:', fallbackError);
+                    throw new Error('Could not access camera: ' + fallbackError.message);
+                }
             }
-        };
-        peerConnection.oniceconnectionstatechange = () => {
-            console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
-            if (peerConnection.iceConnectionState === 'connected') {
-                alert('Stream connected!');
-            } else if (peerConnection.iceConnectionState === 'failed') {
-                alert('Stream connection failed. Check STUN/TURN servers and network.');
-                stopWebRTCStream();
-            } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
-                alert('Stream disconnected or closed.');
-                stopWebRTCStream();
-            }
-        };
-        peerConnection.onsignalingstatechange = () => {
-            console.log(`Signaling state: ${peerConnection.signalingState}`);
-        };
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        sessionId = generateUniqueId();
-        alert(`Streaming session ID: ${sessionId}\nShare this ID with the viewer.`);
-        sendSignalingMessage({ type: 'offer', offer: offer, sessionId });
-        listenForSignalingMessages(sessionId);
-    } catch (e) {
+            peerConnection = new RTCPeerConnection(peerConnectionConfig);
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId });
+                }
+            };
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
+                if (peerConnection.iceConnectionState === 'connected') {
+                    alert('Stream connected!');
+                } else if (peerConnection.iceConnectionState === 'failed') {
+                    alert('Stream connection failed. Check STUN/TURN servers and network.');
+                    stopWebRTCStream();
+                } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
+                    alert('Stream disconnected or closed.');
+                    stopWebRTCStream();
+                }
+            };
+            peerConnection.onsignalingstatechange = () => {
+                console.log(`Signaling state: ${peerConnection.signalingState}`);
+            };
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            sessionId = generateUniqueId();
+            alert(`Streaming session ID: ${sessionId}\nShare this ID with the viewer.`);
+            sendSignalingMessage({ type: 'offer', offer: offer, sessionId });
+            listenForSignalingMessages(sessionId);        } else {
+            throw new Error('MediaDevices API not supported in this browser');
+        }    } catch (e) {
         alert('Error starting WebRTC stream: ' + e.message);
         console.error('WebRTC Start Error:', e);
         stopWebRTCStream();
@@ -134,6 +159,9 @@ function stopWebRTCStream() {
 }
 
 function onDeviceReady() {
+    // Check for camera permissions on startup
+    requestCameraPermission();
+    
     document.getElementById('capture-btn').addEventListener('click', function() {
         if (!peerConnection || peerConnection.iceConnectionState === 'closed' || peerConnection.iceConnectionState === 'failed') {
             startWebRTCStream();
@@ -141,6 +169,27 @@ function onDeviceReady() {
             stopWebRTCStream();
         }
     });
+}
+
+function requestCameraPermission() {
+    if (cordova.plugins && cordova.plugins.permissions) {
+        const permissions = cordova.plugins.permissions;
+        permissions.checkPermission(permissions.CAMERA, function(status) {
+            if (!status.hasPermission) {
+                permissions.requestPermission(permissions.CAMERA, function(status) {
+                    if (!status.hasPermission) {
+                        alert('Camera permission is required to use this app.');
+                    }
+                }, function() {
+                    alert('Camera permission is required to use this app.');
+                });
+            }
+        }, function() {
+            alert('Error checking camera permission.');
+        });
+    } else {
+        console.warn('Cordova Permissions plugin not available');
+    }
 }
 
 document.addEventListener('deviceready', onDeviceReady, false);

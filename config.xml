@@ -6,15 +6,19 @@
     <content src="index.html" />
     <access origin="*" />
     <preference name="android-minSdkVersion" value="22" />
-    <platform name="android">
-        <config-file target="AndroidManifest.xml" parent="/manifest">
+    <platform name="android">        <config-file target="AndroidManifest.xml" parent="/manifest">
             <uses-permission android:name="android.permission.CAMERA" />
             <uses-permission android:name="android.permission.RECORD_AUDIO" />
             <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+            <uses-permission android:name="android.permission.INTERNET" />
+            <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+            <uses-feature android:name="android.hardware.camera" android:required="true" />
+            <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
         </config-file>
         <allow-intent href="market:*" />
-    </platform>
-    <plugin name="cordova-plugin-camera-preview" spec="^0.13.0" />
+    </platform>    <plugin name="cordova-plugin-camera-preview" spec="^0.13.0" />
+    <plugin name="cordova-plugin-camera" spec="^6.0.0" />
+    <plugin name="cordova-plugin-permissions" spec="^1.0.0" />
     <allow-intent href="http://*/*" />
     <allow-intent href="https://*/*" />
     <allow-intent href="tel:*" />
