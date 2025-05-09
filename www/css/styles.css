@@ -38,6 +38,20 @@ body, html {
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
     cursor: pointer;
 }
+#send-btn {
+    position: absolute;
+    bottom: 10px;
+    right: 20px;
+    z-index: 10;
+    padding: 12px 28px;
+    font-size: 18px;
+    background: #28a745;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    cursor: pointer;
+}
 #captured-img {
     position: absolute;
     bottom: 20px;

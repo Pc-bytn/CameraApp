@@ -307,6 +307,36 @@ function stopWebRTCStream() {
     }
 }
 
+// Helper function to share the session link
+async function shareSessionLink() {
+    if (!sessionId) {
+        alert('Please start a stream first to get a session ID.');
+        return;
+    }
+
+    // Extract the base URL from signalingServerUrl
+    const viewerBaseUrl = signalingServerUrl.substring(0, signalingServerUrl.lastIndexOf('/') + 1);
+    const shareUrl = `${viewerBaseUrl}viewer.html?sessionId=${sessionId}`;
+
+    if (navigator.share) {
+        try {
+            await navigator.share({
+                title: 'CameraApp Live Stream',
+                text: 'Join my live stream session!',
+                url: shareUrl,
+            });
+            console.log('Link shared successfully');
+        } catch (error) {
+            console.error('Error using Web Share API:', error);
+            // Fallback if Web Share API fails or is cancelled
+            prompt('Please copy this link to share the stream:', shareUrl);
+        }
+    } else {
+        // Fallback for browsers that don't support Web Share API
+        prompt('Please copy this link to share the stream:', shareUrl);
+    }
+}
+
 function onDeviceReady() {
     console.log('Device ready event fired');
     
@@ -319,14 +349,16 @@ function onDeviceReady() {
     
     // Check for camera permissions on startup
     requestCameraPermission();
-    
-    document.getElementById('capture-btn').addEventListener('click', function() {
+      document.getElementById('capture-btn').addEventListener('click', function() {
         if (!peerConnection || peerConnection.iceConnectionState === 'closed' || peerConnection.iceConnectionState === 'failed') {
             startWebRTCStream();
         } else {
             stopWebRTCStream();
         }
     });
+
+    // Add event listener for the Send button
+    document.getElementById('send-btn').addEventListener('click', shareSessionLink);
 }
 
 function requestCameraPermission() {
