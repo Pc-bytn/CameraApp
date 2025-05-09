@@ -4,7 +4,7 @@ body, html {
     padding: 0;
     width: 100vw;
     height: 100vh;
-    background: #222;
+    background-color: transparent;
     font-family: Arial, sans-serif;
 }
 #camera-container {
