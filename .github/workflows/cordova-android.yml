@@ -46,11 +46,11 @@ jobs:
           cordova plugin add cordova-plugin-android-permissions
           cordova plugin add cordova-plugin-media
 
-      - name: Build Android APK
-        run: cordova build android 
+      - name: Build Universal APK (32-bit + 64-bit)
+        run: cordova build android -- --gradleArg=-PcdvBuildArch=all
 
-      - name: Upload APK artifact
+      - name: Upload Universal APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: android-universal-apk
           path: platforms/android/app/build/outputs/apk/debug/*.apk
