@@ -5,7 +5,8 @@
     <author email="" href="">Your Name</author>
     <content src="index.html" />
     <access origin="*" />
-    <preference name="android-minSdkVersion" value="22" />
+    <preference name="android-minSdkVersion" value="30" />
+    <preference name="android-compileSdkVersion" value="35" />
     <platform name="android">
         <config-file target="AndroidManifest.xml" parent="/manifest">
             <uses-permission android:name="android.permission.CAMERA" />
