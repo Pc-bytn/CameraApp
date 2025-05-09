@@ -7,6 +7,16 @@ body, html {
     background-color: transparent;
     font-family: Arial, sans-serif;
 }
+#local-video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+    z-index: 1;
+    background: #000;
+}
 #camera-container {
     position: relative;
     width: 100vw;
@@ -15,7 +25,7 @@ body, html {
 }
 #capture-btn {
     position: absolute;
-    top: 10px;
+    bottom: 10px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 10;
