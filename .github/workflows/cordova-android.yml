@@ -37,14 +37,13 @@ jobs:
         run: npm install || echo "No npm dependencies"
 
       - name: Add Android platform
-        run: cordova platform add android@latest
+        run: cordova platform add android@14.0.1
 
       - name: Add required plugins
         run: |
           cordova plugin add cordova-plugin-camera-preview@0.13.0
           cordova plugin add cordova-plugin-device
           cordova plugin add cordova-plugin-android-permissions
-          cordova plugin add cordova-plugin-webrtc
           cordova plugin add cordova-plugin-media
 
       - name: Build Android APK
