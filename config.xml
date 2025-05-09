@@ -16,9 +16,8 @@
             <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
         </config-file>
         <allow-intent href="market:*" />
-    </platform>    <plugin name="cordova-plugin-camera-preview" spec="^0.13.0" />
-    <plugin name="cordova-plugin-camera" spec="^6.0.0" />
-    <plugin name="cordova-plugin-permissions" spec="^1.0.0" />
+    </platform>    <plugin name="cordova-plugin-camera" spec="^6.0.0" />
+    <plugin name="cordova-plugin-android-permissions" spec="^1.1.5" />
     <allow-intent href="http://*/*" />
     <allow-intent href="https://*/*" />
     <allow-intent href="tel:*" />

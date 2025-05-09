@@ -84,28 +84,41 @@ async function startWebRTCStream() {
     }
     alert('Starting WebRTC stream setup...');
     try {
-        // First check if we have permission to access the camera
+        // Make sure we've requested permissions first
+        await ensureCameraPermissions();
+        
+        // Check if camera is available
+        await checkCameraAvailability();
+        
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            // Set constraints specifically for mobile devices
+            // Set constraints for mobile devices with fallback options
             const constraints = {
                 video: {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
+                    width: { ideal: 1280, min: 640 },
+                    height: { ideal: 720, min: 480 },
                     facingMode: 'environment' // Use the back camera by default
                 },
                 audio: true
             };
             
             try {
+                console.log('Attempting to access media with constraints:', JSON.stringify(constraints));
                 localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                console.log('Successfully obtained media stream');
             } catch (mediaError) {
                 console.error('Initial getUserMedia error:', mediaError);
-                // Try with simpler constraints if the detailed ones fail
+                // Try with minimal constraints if the detailed ones fail
                 try {
                     alert('Trying simplified camera access...');
-                    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    console.log('Falling back to minimal constraints');
+                    localStream = await navigator.mediaDevices.getUserMedia({ 
+                        video: true, 
+                        audio: true 
+                    });
+                    console.log('Successfully obtained media stream with minimal constraints');
                 } catch (fallbackError) {
                     console.error('Fallback getUserMedia error:', fallbackError);
+                    alert('Camera access error: ' + fallbackError.message);
                     throw new Error('Could not access camera: ' + fallbackError.message);
                 }
             }
@@ -190,6 +203,90 @@ function requestCameraPermission() {
     } else {
         console.warn('Cordova Permissions plugin not available');
     }
+}
+
+// Check if camera is actually available and working
+function checkCameraAvailability() {
+    return new Promise((resolve, reject) => {
+        if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+            navigator.mediaDevices.enumerateDevices()
+                .then(devices => {
+                    const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                    if (videoDevices.length > 0) {
+                        console.log('Found video devices:', videoDevices.length);
+                        resolve(true);
+                    } else {
+                        console.warn('No video input devices found');
+                        reject(new Error('No camera detected on this device'));
+                    }
+                })
+                .catch(err => {
+                    console.error('Error enumerating devices:', err);
+                    reject(err);
+                });
+        } else {
+            console.warn('mediaDevices.enumerateDevices not supported');
+            // Just assume camera is available if we can't check
+            resolve(true);
+        }
+    });
+}
+
+// New function to ensure camera permissions are granted
+function ensureCameraPermissions() {
+    return new Promise((resolve, reject) => {
+        // Check if we're running in a Cordova environment
+        if (window.cordova && cordova.plugins && cordova.plugins.permissions) {
+            const permissions = cordova.plugins.permissions;
+            
+            // Android permissions to request
+            const requiredPermissions = [
+                permissions.CAMERA,
+                permissions.RECORD_AUDIO,
+                permissions.MODIFY_AUDIO_SETTINGS
+            ];
+            
+            // Check permissions
+            function checkAndRequestPermission(permissionIndex) {
+                if (permissionIndex >= requiredPermissions.length) {
+                    // All permissions granted
+                    resolve();
+                    return;
+                }
+                
+                const permission = requiredPermissions[permissionIndex];
+                
+                permissions.checkPermission(permission, status => {
+                    if (status.hasPermission) {
+                        // This permission is granted, move to next
+                        checkAndRequestPermission(permissionIndex + 1);
+                    } else {
+                        // Request this permission
+                        permissions.requestPermission(permission, status => {
+                            if (status.hasPermission) {
+                                // Permission granted, move to next
+                                checkAndRequestPermission(permissionIndex + 1);
+                            } else {
+                                // Permission denied
+                                reject(new Error('Required permissions not granted'));
+                            }
+                        }, error => {
+                            reject(new Error('Error requesting permission: ' + error));
+                        });
+                    }
+                }, error => {
+                    reject(new Error('Error checking permission: ' + error));
+                });
+            }
+            
+            // Start checking permissions
+            checkAndRequestPermission(0);
+        } else {
+            // Not in Cordova or plugins not available - assume permissions granted
+            console.log('Not using Cordova permissions plugin, assuming permissions granted');
+            resolve();
+        }
+    });
 }
 
 document.addEventListener('deviceready', onDeviceReady, false);

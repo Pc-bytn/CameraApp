@@ -3,7 +3,24 @@
   "version": "1.0.0",
   "description": "Cordova Camera Preview App",
   "main": "www/index.html",
-  "scripts": {},
+  "scripts": {
+    "build": "cordova build android",
+    "prepare": "cordova prepare"
+  },
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "cordova-android": "^14.0.1",
+    "cordova-plugin-android-permissions": "^1.1.5",
+    "cordova-plugin-camera": "^6.0.0"
+  },
+  "cordova": {
+    "plugins": {
+      "cordova-plugin-camera": {},
+      "cordova-plugin-android-permissions": {}
+    },
+    "platforms": [
+      "android"
+    ]
+  }
 }
