@@ -62,6 +62,31 @@ if ($action === 'send') {
             $targetFile = $messagesForViewerFile;
         } elseif ($data['type'] === 'answer') { // Answer from viewer, for initiator
             $targetFile = $messagesForInitiatorFile;
+        } elseif ($data['type'] === 'ping') { // Ping from initiator (app) to viewer
+            $targetFile = $messagesForViewerFile;
+        } elseif ($data['type'] === 'pong') { // Pong response from viewer to initiator (app)
+            $targetFile = $messagesForInitiatorFile;
+        } elseif ($data['type'] === 'hangup') { // Hangup can be sent by either side
+            // Determine target based on origin if provided, otherwise send to both files
+            if (isset($data['origin']) && $data['origin'] === 'initiator') {
+                $targetFile = $messagesForViewerFile;
+            } elseif (isset($data['origin']) && $data['origin'] === 'viewer') {
+                $targetFile = $messagesForInitiatorFile;
+            } else {
+                // If no origin specified, write to both files
+                $messages = file_exists($messagesForViewerFile) ? json_decode(file_get_contents($messagesForViewerFile), true) : [];
+                if (!is_array($messages)) $messages = [];
+                $messages[] = $data;
+                file_put_contents($messagesForViewerFile, json_encode($messages), LOCK_EX);
+                
+                $messages = file_exists($messagesForInitiatorFile) ? json_decode(file_get_contents($messagesForInitiatorFile), true) : [];
+                if (!is_array($messages)) $messages = [];
+                $messages[] = $data;
+                file_put_contents($messagesForInitiatorFile, json_encode($messages), LOCK_EX);
+                
+                echo json_encode(['status' => 'Hangup message sent to both peers.']);
+                exit;
+            }
         } elseif ($data['type'] === 'candidate') {
             if (isset($data['origin']) && $data['origin'] === 'initiator') { // Client can add 'origin' field
                  $targetFile = $messagesForViewerFile;
@@ -90,8 +115,6 @@ if ($action === 'send') {
             http_response_code(400);
             echo json_encode(['error' => 'Could not determine target for message type: ' . $data['type']]);
         }
-
-
     } else {
         http_response_code(405);
         echo json_encode(['error' => 'POST method required for send.']);
