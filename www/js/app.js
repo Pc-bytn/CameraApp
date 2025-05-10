@@ -4,12 +4,28 @@ let peerConnection;
 const signalingServerUrl = "PRIVATE_WEB_URL"; // Will be replaced during build by GitHub Actions
 let sessionId; // To identify this specific WebRTC session
 let pollingIntervalId; // Store the interval ID for signaling polling
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+let isReconnecting = false;
+let keepAliveIntervalId;
 
 const peerConnectionConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-    ]
+        { urls: 'stun:stun1.l.google.com:19302' },
+        // Add TURN servers for better connectivity through firewalls/NATs
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
+    ],
+    iceCandidatePoolSize: 10
 };
 
 function generateUniqueId() {
@@ -30,15 +46,21 @@ async function sendSignalingMessage(message) {
             throw new Error(`Signaling server error: ${response.status} ${errorText}`);
         }
         console.log('Signaling message sent:', message.type);
+        return true;
     } catch (e) {
         alert(`Error sending signaling message (${message.type}): ${e.message}`);
         console.error('Send signaling error:', e);
+        return false;
     }
 }
 
 async function listenForSignalingMessages(currentSessionId) {
+    if (pollingIntervalId) {
+        clearInterval(pollingIntervalId);
+    }
+    
     const intervalId = setInterval(async () => {
-        if (!peerConnection || peerConnection.signalingState === 'closed' || peerConnection.iceConnectionState === 'closed') {
+        if (!peerConnection || peerConnection.signalingState === 'closed') {
             clearInterval(intervalId);
             return;
         }
@@ -66,6 +88,11 @@ async function listenForSignalingMessages(currentSessionId) {
                         } else {
                             console.warn('Received ICE candidate but remote description not set yet.');
                         }
+                    } else if (message.type === 'pong') {
+                        console.log('Received pong from viewer - connection alive');
+                    } else if (message.type === 'hangup') {
+                        console.log('Received hangup from viewer');
+                        stopWebRTCStream();
                     }
                 }
             } else if (response.status !== 404) {
@@ -74,7 +101,22 @@ async function listenForSignalingMessages(currentSessionId) {
         } catch (e) {
             // console.warn('Polling error:', e.message);
         }
-    }, 3000);
+    }, 1000); // Faster polling (match viewer.html)
+    
+    // Start a keepalive ping mechanism
+    if (keepAliveIntervalId) {
+        clearInterval(keepAliveIntervalId);
+    }
+    
+    keepAliveIntervalId = setInterval(() => {
+        if (peerConnection && sessionId && 
+            peerConnection.iceConnectionState === 'connected' || 
+            peerConnection.iceConnectionState === 'completed') {
+            sendSignalingMessage({ type: 'ping', sessionId });
+            console.log('Sending ping to keep connection alive');
+        }
+    }, 10000); // Send ping every 10 seconds
+    
     return intervalId;
 }
 
@@ -99,6 +141,9 @@ async function startWebRTCStream() {
     updateCaptureButtonState(true);
     
     alert('Starting WebRTC stream setup...');
+    reconnectAttempts = 0;
+    isReconnecting = false;
+    
     try {
         // Make sure we've requested permissions first
         await ensureCameraPermissions();
@@ -106,121 +151,125 @@ async function startWebRTCStream() {
         // Check if camera is available
         await checkCameraAvailability();
         
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            // Set constraints for mobile devices with fallback options
-            const constraints = {
-                video: {
-                    width: { ideal: 1280, min: 640 },
-                    height: { ideal: 720, min: 480 },
-                    facingMode: 'environment' // Use the back camera by default
-                },
-                audio: true
-            };
-            
-            try {
-                console.log('Attempting to access media with constraints:', JSON.stringify(constraints));
-                
-                // Check camera device permissions for Android 13+ explicitly
-                if (window.cordova && 
-                    device && 
-                    device.platform === "Android" && 
-                    parseInt(device.version) >= 13) {
-                    await checkAndroidCamera13Permissions();
-                }
-                
-                localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                console.log('Successfully obtained media stream');
-                
-                // Create a video element to display the local stream (optional)
-                const videoElement = document.getElementById('local-video');
-                if (videoElement) {
-                    videoElement.srcObject = localStream;
-                }
-                
-            } catch (mediaError) {
-                console.error('Initial getUserMedia error:', mediaError);
-                
-                // Try with video-only constraints first
-                try {
-                    alert('Trying video-only access... Error: ' + mediaError.message);
-                    console.log('Falling back to video-only constraints');
-                    localStream = await navigator.mediaDevices.getUserMedia({ 
-                        video: true, 
-                        audio: false 
-                    });
-                    console.log('Successfully obtained video-only stream');
-                    
-                    // Try adding audio separately if video works
-                    try {
-                        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                        const audioTrack = audioStream.getAudioTracks()[0];
-                        localStream.addTrack(audioTrack);
-                        console.log('Successfully added audio track to stream');
-                    } catch (audioError) {
-                        console.warn('Could not add audio to stream:', audioError);
-                        // Continue with video only
-                    }
-                    
-                } catch (videoError) {
-                    // Final fallback - try with minimal constraints
-                    try {
-                        alert('Trying simplified camera access... Error: ' + videoError.message);
-                        console.log('Falling back to minimal constraints');
-                        
-                        // Try with most basic settings possible
-                        const constraints = {
-                            video: {
-                                width: { ideal: 640, min: 320 },
-                                height: { ideal: 480, min: 240 },
-                                frameRate: { max: 15 }
-                            }
-                        };
-                        
-                        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                        console.log('Successfully obtained media stream with minimal constraints');
-                    } catch (fallbackError) {
-                        console.error('Fallback getUserMedia error:', fallbackError);
-                        // Try one last approach - enumerate devices first
-                        try {
-                            const devices = await navigator.mediaDevices.enumerateDevices();
-                            const videoDevices = devices.filter(device => device.kind === 'videoinput');
-                            
-                            if (videoDevices.length > 0) {
-                                // Try to use a specific camera device
-                                const constraints = {
-                                    video: {
-                                        deviceId: { exact: videoDevices[0].deviceId },
-                                        width: { ideal: 640 },
-                                        height: { ideal: 480 }
-                                    }
-                                };
-                                
-                                localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                                console.log('Successfully obtained stream using specific device ID');
-                            } else {
-                                const errorMsg = 'No cameras detected on this device';
-                                alert(errorMsg);
-                                throw new Error(errorMsg);
-                            }
-                        } catch (finalError) {
-                            const errorMsg = 'Camera access error: ' + finalError.name + ': ' + finalError.message;
-                            alert(errorMsg);
-                            throw new Error('Could not access camera: ' + finalError.message);
-                        }
-                    }
-                }
-            }
-            
-            // Setup WebRTC peer connection
-            setupPeerConnection();
-            
-        } else {
-            throw new Error('MediaDevices API not supported in this browser');
-        }
+        await initializeMediaStream();
+        
+        // Setup WebRTC peer connection
+        setupPeerConnection();
+        
     } catch (e) {
         alert('Error starting WebRTC stream: ' + e.message);
         console.error('WebRTC Start Error:', e);
         stopWebRTCStream();
+    }
+}
+
+async function initializeMediaStream() {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        // Set constraints for mobile devices with fallback options
+        const constraints = {
+            video: {
+                width: { ideal: 1280, min: 640 },
+                height: { ideal: 720, min: 480 },
+                facingMode: 'environment' // Use the back camera by default
+            },
+            audio: true
+        };
+        
+        try {
+            console.log('Attempting to access media with constraints:', JSON.stringify(constraints));
+            
+            // Check camera device permissions for Android 13+ explicitly
+            if (window.cordova && 
+                device && 
+                device.platform === "Android" && 
+                parseInt(device.version) >= 13) {
+                await checkAndroidCamera13Permissions();
+            }
+            
+            localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            console.log('Successfully obtained media stream');
+            
+            // Create a video element to display the local stream (optional)
+            const videoElement = document.getElementById('local-video');
+            if (videoElement) {
+                videoElement.srcObject = localStream;
+            }
+            
+        } catch (mediaError) {
+            console.error('Initial getUserMedia error:', mediaError);
+            
+            // Try with video-only constraints first
+            try {
+                alert('Trying video-only access... Error: ' + mediaError.message);
+                console.log('Falling back to video-only constraints');
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: true, 
+                    audio: false 
+                });
+                console.log('Successfully obtained video-only stream');
+                
+                // Try adding audio separately if video works
+                try {
+                    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const audioTrack = audioStream.getAudioTracks()[0];
+                    localStream.addTrack(audioTrack);
+                    console.log('Successfully added audio track to stream');
+                } catch (audioError) {
+                    console.warn('Could not add audio to stream:', audioError);
+                    // Continue with video only
+                }
+                
+            } catch (videoError) {
+                // Final fallback - try with minimal constraints
+                try {
+                    alert('Trying simplified camera access... Error: ' + videoError.message);
+                    console.log('Falling back to minimal constraints');
+                    
+                    // Try with most basic settings possible
+                    const constraints = {
+                        video: {
+                            width: { ideal: 640, min: 320 },
+                            height: { ideal: 480, min: 240 },
+                            frameRate: { max: 15 }
+                        }
+                    };
+                    
+                    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    console.log('Successfully obtained media stream with minimal constraints');
+                } catch (fallbackError) {
+                    console.error('Fallback getUserMedia error:', fallbackError);
+                    // Try one last approach - enumerate devices first
+                    try {
+                        const devices = await navigator.mediaDevices.enumerateDevices();
+                        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                        
+                        if (videoDevices.length > 0) {
+                            // Try to use a specific camera device
+                            const constraints = {
+                                video: {
+                                    deviceId: { exact: videoDevices[0].deviceId },
+                                    width: { ideal: 640 },
+                                    height: { ideal: 480 }
+                                }
+                            };
+                            
+                            localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                            console.log('Successfully obtained stream using specific device ID');
+                        } else {
+                            const errorMsg = 'No cameras detected on this device';
+                            alert(errorMsg);
+                            throw new Error(errorMsg);
+                        }
+                    } catch (finalError) {
+                        const errorMsg = 'Camera access error: ' + finalError.name + ': ' + finalError.message;
+                        alert(errorMsg);
+                        throw new Error('Could not access camera: ' + finalError.message);
+                    }
+                }
+            }
+        }
+    } else {
+        throw new Error('MediaDevices API not supported in this browser');
     }
 }
 
@@ -229,6 +278,16 @@ function stopWebRTCStream() {
     if (pollingIntervalId) {
         clearInterval(pollingIntervalId);
         pollingIntervalId = null;
+    }
+    
+    if (keepAliveIntervalId) {
+        clearInterval(keepAliveIntervalId);
+        keepAliveIntervalId = null;
+    }
+    
+    // Notify viewers that we're stopping the stream
+    if (sessionId && peerConnection) {
+        sendSignalingMessage({ type: 'hangup', sessionId });
     }
     
     // Stop all tracks in the local stream
@@ -257,11 +316,19 @@ function stopWebRTCStream() {
     if (videoElement) {
         videoElement.srcObject = null;
     }
+    
+    // Reset reconnection state
+    isReconnecting = false;
+    reconnectAttempts = 0;
 }
 
 // Helper function to set up the peer connection
 function setupPeerConnection() {
     try {
+        if (peerConnection) {
+            peerConnection.close();
+        }
+        
         peerConnection = new RTCPeerConnection(peerConnectionConfig);
         
         // Add tracks from local stream to peer connection
@@ -273,7 +340,12 @@ function setupPeerConnection() {
         // Set up event handlers
         peerConnection.onicecandidate = event => {
             if (event.candidate) {
-                sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId });
+                sendSignalingMessage({ 
+                    type: 'candidate', 
+                    candidate: event.candidate, 
+                    sessionId,
+                    origin: 'initiator'  // Mark this candidate as coming from initiator
+                });
             }
         };
         
@@ -281,11 +353,22 @@ function setupPeerConnection() {
             console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
             if (peerConnection.iceConnectionState === 'connected') {
                 alert('Stream connected!');
+                // Reset reconnection attempts when connected
+                isReconnecting = false;
+                reconnectAttempts = 0;
             } else if (peerConnection.iceConnectionState === 'failed') {
-                alert('Stream connection failed. Check STUN/TURN servers and network.');
-                stopWebRTCStream();
-            } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
-                alert('Stream disconnected or closed.');
+                console.log('Stream connection failed, attempting to recover...');
+                handleConnectionFailure();
+            } else if (peerConnection.iceConnectionState === 'disconnected') {
+                console.log('Stream temporarily disconnected. Waiting for reconnection...');
+                // Wait a moment to see if it auto-recovers before trying to reconnect
+                setTimeout(() => {
+                    if (peerConnection && peerConnection.iceConnectionState === 'disconnected') {
+                        handleConnectionFailure();
+                    }
+                }, 5000);
+            } else if (peerConnection.iceConnectionState === 'closed') {
+                console.log('Stream connection closed.');
                 stopWebRTCStream();
             }
         };
@@ -303,17 +386,64 @@ function setupPeerConnection() {
     }
 }
 
+async function handleConnectionFailure() {
+    if (isReconnecting) return;
+    
+    isReconnecting = true;
+    
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        alert(`Connection lost. Attempting to reconnect... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+        
+        try {
+            // Close existing connection
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            
+            // Setup new connection
+            setupPeerConnection();
+        } catch (e) {
+            console.error('Reconnection attempt failed:', e);
+            
+            // Wait a moment before trying again
+            setTimeout(() => {
+                isReconnecting = false;
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    handleConnectionFailure();
+                } else {
+                    alert('Failed to reconnect after multiple attempts.');
+                    stopWebRTCStream();
+                }
+            }, 3000);
+        }
+    } else {
+        alert('Failed to reconnect after multiple attempts.');
+        stopWebRTCStream();
+    }
+}
+
 // Helper function to create and send offer
 async function createAndSendOffer() {
     try {
-        const offer = await peerConnection.createOffer();
+        const offer = await peerConnection.createOffer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true,
+            iceRestart: isReconnecting // Use ice restart for reconnection attempts
+        });
         await peerConnection.setLocalDescription(offer);
         
-        // Generate session ID and send offer
-        sessionId = generateUniqueId();
-        alert(`Streaming session ID: ${sessionId}\nShare this ID with the viewer.`);
+        if (!sessionId) {
+            // Generate session ID only if not reconnecting
+            sessionId = generateUniqueId();
+            alert(`Streaming session ID: ${sessionId}\nShare this ID with the viewer.`);
+        }
         
-        await sendSignalingMessage({ type: 'offer', offer: offer, sessionId });
+        const success = await sendSignalingMessage({ type: 'offer', offer: offer, sessionId });
+        if (!success) {
+            throw new Error('Failed to send offer to signaling server');
+        }
         
         // Start listening for messages
         pollingIntervalId = await listenForSignalingMessages(sessionId);
