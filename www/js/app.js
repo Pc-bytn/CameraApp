@@ -1,7 +1,7 @@
 // --- WebRTC Globals ---
 let localStream;
 let peerConnection;
-const signalingServerUrl = process.env.PRIVATE_WEB_URL; // TODO: Replace with your actual PHP server URL
+const signalingServerUrl = "PRIVATE_WEB_URL"; // Will be replaced during build by GitHub Actions
 let sessionId; // To identify this specific WebRTC session
 let pollingIntervalId; // Store the interval ID for signaling polling
 
