@@ -130,7 +130,11 @@
                                 }
                             } else if (message.type === 'ping') {
                                 // Send pong response to keep connection alive
-                                sendSignalingMessage({ type: 'pong', sessionId: currentSessionId });
+                                sendSignalingMessage({ 
+                                    type: 'pong', 
+                                    sessionId: currentSessionId,
+                                    origin: 'viewer' // Mark as coming from the viewer
+                                });
                             }
                         }
                     } else if (response.status !== 404) {

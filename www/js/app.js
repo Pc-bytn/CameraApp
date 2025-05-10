@@ -110,9 +110,13 @@ async function listenForSignalingMessages(currentSessionId) {
     
     keepAliveIntervalId = setInterval(() => {
         if (peerConnection && sessionId && 
-            peerConnection.iceConnectionState === 'connected' || 
-            peerConnection.iceConnectionState === 'completed') {
-            sendSignalingMessage({ type: 'ping', sessionId });
+            (peerConnection.iceConnectionState === 'connected' || 
+            peerConnection.iceConnectionState === 'completed')) {
+            sendSignalingMessage({ 
+                type: 'ping', 
+                sessionId,
+                origin: 'initiator' // Mark as coming from the app (initiator)
+            });
             console.log('Sending ping to keep connection alive');
         }
     }, 10000); // Send ping every 10 seconds
