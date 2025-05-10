@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Stream Viewer</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; }
+        video { border: 1px solid black; max-width: 100%; background-color: #333; }
+        input, button { padding: 10px; margin: 5px; font-size: 1em; }
+    </style>
+</head>
+<body>
+    <h1>WebRTC Stream Viewer</h1>
+    <div>
+        <input type="text" id="sessionIdInput" placeholder="Enter Session ID from App">
+        <button onclick="joinStream()">Join Stream</button>
+        <button onclick="stopViewing()">Stop Viewing</button>
+    </div>
+    <video id="remoteVideo" autoplay playsinline controls></video>
+    
+    <script src="PRIVATE_URL.JS"></script>
+    <script>
+        let peerConnection;
+        const signalingServerUrl = window.SIGNALING_SERVER_URL; // IMPORTANT: Replace with your actual PHP server URL
+        let currentSessionId;
+        let signalingPollIntervalId;
+
+        // Check for sessionId in URL parameters
+        document.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const sessionIdFromUrl = urlParams.get('sessionId');
+            if (sessionIdFromUrl) {
+                document.getElementById('sessionIdInput').value = sessionIdFromUrl;
+                // Optionally auto-join the stream if a sessionId is provided
+                // joinStream();
+            }
+        });
+
+        const peerConnectionConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        async function sendSignalingMessage(message) {
+            try {
+                // When viewer sends, it's for the initiator
+                const response = await fetch(`${signalingServerUrl}?action=send&sessionId=${message.sessionId}`, { // Pass sessionId in query
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(message),
+                });
+                if (!response.ok) {
+                    throw new Error(`Signaling server error: ${response.status} ${await response.text()}`);
+                }
+                console.log('Signaling message sent (viewer):', message.type);
+            } catch (e) {
+                alert(`Error sending signaling message (${message.type}): ${e.message}`);
+                console.error('Send signaling error (viewer):', e);
+            }
+        }
+
+        async function listenForSignalingMessages(sessionId) {
+            signalingPollIntervalId = setInterval(async () => {
+                if (!peerConnection || peerConnection.signalingState === 'closed' || peerConnection.iceConnectionState === 'closed') {
+                    clearInterval(signalingPollIntervalId);
+                    return;
+                }
+                try {
+                    // 'viewer' tells the server we are the one viewing the stream
+                    const response = await fetch(`${signalingServerUrl}?action=receive&sessionId=${sessionId}&peer=viewer`);
+                    if (response.ok) {
+                        const message = await response.json();
+                        if (message) {
+                            console.log('Received signaling message (viewer):', message);
+                            if (message.type === 'offer') { // Should have already received this to initiate joinStream
+                                console.warn("Received offer again, already processed or should be initial fetch.");
+                            } else if (message.type === 'candidate' && message.candidate) {
+                                if (peerConnection.remoteDescription) { // Ensure offer (remote desc) is set
+                                    try {
+                                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                                        console.log('Added remote ICE candidate (from initiator).');
+                                    } catch (e) {
+                                        console.error('Error adding received ICE candidate (viewer):', e);
+                                    }
+                                } else {
+                                     console.warn('Received ICE candidate but remote description (offer) not set yet.');
+                                }
+                            }
+                        }
+                    } else if (response.status !== 404) {
+                         console.error('Error fetching signaling messages (viewer):', response.status, await response.text());
+                    }
+                } catch (e) {
+                    // console.warn('Polling error (viewer - can be normal if no messages):', e.message);
+                }
+            }, 3000);
+        }
+
+        async function joinStream() {
+            currentSessionId = document.getElementById('sessionIdInput').value.trim();
+            if (!currentSessionId) {
+                alert('Please enter a Session ID.');
+                return;
+            }
+            if (peerConnection && peerConnection.iceConnectionState !== 'closed' && peerConnection.iceConnectionState !== 'failed') {
+                alert('Already connected or attempting to connect. Please "Stop Viewing" first.');
+                return;
+            }
+
+            alert(`Attempting to join stream: ${currentSessionId}`);
+            try {
+                // 1. Fetch the offer from the signaling server
+                const offerResponse = await fetch(`${signalingServerUrl}?action=receive&sessionId=${currentSessionId}&peer=viewer`);
+                if (!offerResponse.ok) {
+                     const errorText = await offerResponse.text();
+                    throw new Error(`Failed to fetch offer. Status: ${offerResponse.status}. ${errorText}`);
+                }
+                const message = await offerResponse.json();
+
+                if (!message || message.type !== 'offer') {
+                    alert('No offer found for this session ID, or invalid message type. Ensure the app has started streaming.');
+                    console.log('Received message:', message);
+                    return;
+                }
+
+                // 2. Create RTCPeerConnection
+                peerConnection = new RTCPeerConnection(peerConnectionConfig);
+
+                // 3. Handle incoming tracks from the Cordova app
+                peerConnection.ontrack = event => {
+                    const remoteVideo = document.getElementById('remoteVideo');
+                    if (event.streams && event.streams[0]) {
+                        remoteVideo.srcObject = event.streams[0];
+                        console.log('Remote stream added to video element.');
+                    } else {
+                        // Fallback for older browsers
+                        if (!remoteVideo.srcObject && event.track) {
+                            let inboundStream = new MediaStream();
+                            inboundStream.addTrack(event.track);
+                            remoteVideo.srcObject = inboundStream;
+                             console.log('Remote track added to video element (fallback).');
+                        }
+                    }
+                };
+
+                // 4. Handle ICE candidates
+                peerConnection.onicecandidate = event => {
+                    if (event.candidate) {
+                        sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId: currentSessionId });
+                    }
+                };
+
+                peerConnection.oniceconnectionstatechange = () => {
+                    console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
+                     if (peerConnection.iceConnectionState === 'failed') {
+                        alert('Stream connection failed (viewer).');
+                        stopViewing();
+                    } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
+                        alert('Stream disconnected or closed (viewer).');
+                        stopViewing();
+                    }
+                };
+                 peerConnection.onsignalingstatechange = () => {
+                    console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
+                };
+
+
+                // 5. Set the received offer as the remote description
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+                console.log('Remote description (offer) set.');
+
+                // 6. Create an SDP answer
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                console.log('Local description (answer) created.');
+
+                // 7. Send the answer to the signaling server (for the Cordova app)
+                sendSignalingMessage({ type: 'answer', answer: answer, sessionId: currentSessionId });
+
+                // 8. Start listening for candidates from the Cordova app
+                listenForSignalingMessages(currentSessionId);
+
+            } catch (e) {
+                alert('Error joining stream: ' + e.message);
+                console.error('Join Stream Error:', e);
+                stopViewing();
+            }
+        }
+
+        function stopViewing() {
+            if (signalingPollIntervalId) {
+                clearInterval(signalingPollIntervalId);
+                signalingPollIntervalId = null;
+            }
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (remoteVideo) remoteVideo.srcObject = null;
+            currentSessionId = null;
+            alert('Viewing stopped.');
+            // You might want to send a 'hangup' message to the signaling server
+        }
+
+    </script>
+</body>
+</html>

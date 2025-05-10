@@ -4,8 +4,18 @@ body, html {
     padding: 0;
     width: 100vw;
     height: 100vh;
-    background: #222;
+    background-color: transparent;
     font-family: Arial, sans-serif;
+}
+#local-video {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    object-fit: cover;
+    z-index: 1;
+    background: #000;
 }
 #camera-container {
     position: relative;
@@ -15,13 +25,27 @@ body, html {
 }
 #capture-btn {
     position: absolute;
-    top: 10px;
+    bottom: 10px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 10;
     padding: 12px 28px;
     font-size: 18px;
     background: #0078d7;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    cursor: pointer;
+}
+#send-btn {
+    position: absolute;
+    bottom: 10px;
+    right: 20px;
+    z-index: 10;
+    padding: 12px 28px;
+    font-size: 18px;
+    background: #28a745;
     color: #fff;
     border: none;
     border-radius: 6px;
