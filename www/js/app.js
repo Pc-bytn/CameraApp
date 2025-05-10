@@ -78,11 +78,26 @@ async function listenForSignalingMessages(currentSessionId) {
     return intervalId;
 }
 
+// Update the capture button based on streaming state
+function updateCaptureButtonState(isStreaming) {
+    const captureBtn = document.getElementById('capture-btn');
+    if (isStreaming) {
+        captureBtn.classList.add('streaming');
+    } else {
+        captureBtn.classList.remove('streaming');
+    }
+}
+
+// Modified functions to update button state
 async function startWebRTCStream() {
     if (peerConnection && peerConnection.iceConnectionState !== 'closed' && peerConnection.iceConnectionState !== 'failed') {
         alert('A stream is already active or attempting to connect.');
         return;
     }
+    
+    // Update button state to streaming
+    updateCaptureButtonState(true);
+    
     alert('Starting WebRTC stream setup...');
     try {
         // Make sure we've requested permissions first
@@ -209,6 +224,41 @@ async function startWebRTCStream() {
     }
 }
 
+function stopWebRTCStream() {
+    // Clear any polling intervals
+    if (pollingIntervalId) {
+        clearInterval(pollingIntervalId);
+        pollingIntervalId = null;
+    }
+    
+    // Stop all tracks in the local stream
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            track.stop();
+            console.log(`Stopped ${track.kind} track`);
+        });
+        localStream = null;
+    }
+    
+    // Close the peer connection
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+    
+    // Update button state to not streaming
+    updateCaptureButtonState(false);
+    
+    alert('Stream stopped.');
+    sessionId = null;
+    
+    // Clear video element if exists
+    const videoElement = document.getElementById('local-video');
+    if (videoElement) {
+        videoElement.srcObject = null;
+    }
+}
+
 // Helper function to set up the peer connection
 function setupPeerConnection() {
     try {
@@ -275,64 +325,23 @@ async function createAndSendOffer() {
     }
 }
 
-function stopWebRTCStream() {
-    // Clear any polling intervals
-    if (pollingIntervalId) {
-        clearInterval(pollingIntervalId);
-        pollingIntervalId = null;
-    }
-    
-    // Stop all tracks in the local stream
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            track.stop();
-            console.log(`Stopped ${track.kind} track`);
-        });
-        localStream = null;
-    }
-    
-    // Close the peer connection
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-    }
-    
-    alert('Stream stopped.');
-    sessionId = null;
-    
-    // Clear video element if exists
-    const videoElement = document.getElementById('local-video');
-    if (videoElement) {
-        videoElement.srcObject = null;
-    }
-}
-
 // Helper function to share the session link
 async function shareSessionLink() {
     if (!sessionId) {
         alert('Please start a stream first to get a session ID.');
         return;
-    }
-
-    // Extract the base URL from signalingServerUrl
+    }    // Extract the base URL from signalingServerUrl
     const viewerBaseUrl = signalingServerUrl.substring(0, signalingServerUrl.lastIndexOf('/') + 1);
     const shareUrl = `${viewerBaseUrl}viewer.html?sessionId=${sessionId}`;
 
-    if (navigator.share) {
-        try {
-            await navigator.share({
-                title: 'CameraApp Live Stream',
-                text: 'Join my live stream session!',
-                url: shareUrl,
-            });
-            console.log('Link shared successfully');
-        } catch (error) {
-            console.error('Error using Web Share API:', error);
-            // Fallback if Web Share API fails or is cancelled
-            prompt('Please copy this link to share the stream:', shareUrl);
+    try {
+        // Use the Navigator Clipboard API to write text to the clipboard
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(shareUrl);
+            alert('Stream link copied to clipboard!');
+            console.log('Link copied to clipboard');
         }
-    } else {
-        // Fallback for browsers that don't support Web Share API
+    } catch (error) {
         prompt('Please copy this link to share the stream:', shareUrl);
     }
 }
@@ -347,9 +356,13 @@ function onDeviceReady() {
         console.log(`Device platform: ${device.platform}, version: ${device.version}`);
     }
     
+    // Set initial button state
+    updateCaptureButtonState(false);
+    
     // Check for camera permissions on startup
     requestCameraPermission();
-      document.getElementById('capture-btn').addEventListener('click', function() {
+    
+    document.getElementById('capture-btn').addEventListener('click', function() {
         if (!peerConnection || peerConnection.iceConnectionState === 'closed' || peerConnection.iceConnectionState === 'failed') {
             startWebRTCStream();
         } else {
