@@ -8,6 +8,15 @@
         body { font-family: sans-serif; margin: 20px; }
         video { border: 1px solid black; max-width: 100%; background-color: #333; }
         input, button { padding: 10px; margin: 5px; font-size: 1em; }
+        #connectionStatus {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .connecting { background-color: #FFF3CD; color: #856404; }
+        .connected { background-color: #D4EDDA; color: #155724; }
+        .disconnected { background-color: #F8D7DA; color: #721C24; }
     </style>
 </head>
 <body>
@@ -17,6 +26,7 @@
         <button onclick="joinStream()">Join Stream</button>
         <button onclick="stopViewing()">Stop Viewing</button>
     </div>
+    <div id="connectionStatus" style="display: none;"></div>
     <video id="remoteVideo" autoplay playsinline controls></video>
     
     <script src="PRIVATE_URL.JS"></script>
@@ -25,6 +35,11 @@
         const signalingServerUrl = window.SIGNALING_SERVER_URL; // IMPORTANT: Replace with your actual PHP server URL
         let currentSessionId;
         let signalingPollIntervalId;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 3;
+        let isReconnecting = false;
+        let connectionCheckIntervalId = null;
+        let appInBackground = false;
 
         // Check for sessionId in URL parameters
         document.addEventListener('DOMContentLoaded', function() {
@@ -33,16 +48,35 @@
             if (sessionIdFromUrl) {
                 document.getElementById('sessionIdInput').value = sessionIdFromUrl;
                 // Optionally auto-join the stream if a sessionId is provided
-                // joinStream();
+                joinStream();
             }
         });
 
         const peerConnectionConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
+                { urls: 'stun:stun1.l.google.com:19302' },
+                // Add free TURN servers for better connectivity
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
+            ],
+            iceCandidatePoolSize: 10
         };
+
+        function updateConnectionStatus(status, message) {
+            const statusElement = document.getElementById('connectionStatus');
+            statusElement.style.display = 'block';
+            statusElement.textContent = message;
+            statusElement.className = status;
+        }
 
         async function sendSignalingMessage(message) {
             try {
@@ -59,14 +93,20 @@
                 }
                 console.log('Signaling message sent (viewer):', message.type);
             } catch (e) {
-                alert(`Error sending signaling message (${message.type}): ${e.message}`);
                 console.error('Send signaling error (viewer):', e);
+                updateConnectionStatus('disconnected', `Error sending signaling message: ${e.message}`);
+                return false;
             }
+            return true;
         }
 
         async function listenForSignalingMessages(sessionId) {
+            if (signalingPollIntervalId) {
+                clearInterval(signalingPollIntervalId);
+            }
+            
             signalingPollIntervalId = setInterval(async () => {
-                if (!peerConnection || peerConnection.signalingState === 'closed' || peerConnection.iceConnectionState === 'closed') {
+                if (!peerConnection || peerConnection.signalingState === 'closed') {
                     clearInterval(signalingPollIntervalId);
                     return;
                 }
@@ -90,6 +130,43 @@
                                 } else {
                                      console.warn('Received ICE candidate but remote description (offer) not set yet.');
                                 }
+                            } else if (message.type === 'ping') {
+                                // Send pong response to keep connection alive
+                                sendSignalingMessage({ 
+                                    type: 'pong', 
+                                    sessionId: currentSessionId,
+                                    origin: 'viewer' // Mark as coming from the viewer
+                                });
+                                
+                                // If ping contains app state information, update our UI
+                                if (message.appState) {
+                                    appInBackground = (message.appState === 'background');
+                                    updateAppStateUI();
+                                }
+                            } else if (message.type === 'app-state') {
+                                // App is reporting its state explicitly
+                                if (message.state === 'background') {
+                                    appInBackground = true;
+                                    updateConnectionStatus('connecting', 'Mobile app is in background. Stream may pause temporarily.');
+                                } else if (message.state === 'foreground') {
+                                    appInBackground = false;
+                                    updateConnectionStatus('connected', 'Mobile app is active. Stream should resume shortly.');
+                                    
+                                    // Check connection after a short delay to ensure it's working
+                                    setTimeout(checkConnectionAfterResume, 2000);
+                                } else if (message.state === 'stream-ended') {
+                                    updateConnectionStatus('disconnected', 'Stream ended because mobile app was in background too long.');
+                                    stopViewing();
+                                }
+                            } else if (message.type === 'connection-status') {
+                                // Response to our connection-check request
+                                if (message.status === 'background') {
+                                    appInBackground = true;
+                                    updateConnectionStatus('connecting', 'Mobile app is in background. Stream may pause temporarily.');
+                                } else {
+                                    appInBackground = false;
+                                    updateConnectionStatus('connected', 'Connection verified, mobile app is active.');
+                                }
                             }
                         }
                     } else if (response.status !== 404) {
@@ -98,7 +175,54 @@
                 } catch (e) {
                     // console.warn('Polling error (viewer - can be normal if no messages):', e.message);
                 }
-            }, 3000);
+            }, 1000); // More frequent polling to catch messages quickly
+            
+            // Start periodic connection checks
+            if (connectionCheckIntervalId) {
+                clearInterval(connectionCheckIntervalId);
+            }
+            
+            connectionCheckIntervalId = setInterval(() => {
+                // Only check when we think we're connected but might have issues
+                if (peerConnection && 
+                    (peerConnection.iceConnectionState === 'disconnected' || 
+                     peerConnection.iceConnectionState === 'completed' ||
+                     peerConnection.iceConnectionState === 'connected')) {
+                    
+                    // Send a connection check request through signaling
+                    sendSignalingMessage({ 
+                        type: 'connection-check', 
+                        sessionId: currentSessionId,
+                        timestamp: Date.now()
+                    });
+                }
+            }, 15000); // Check every 15 seconds
+        }
+
+        function updateAppStateUI() {
+            if (appInBackground) {
+                updateConnectionStatus('connecting', 'Mobile app is in background. Stream may pause temporarily.');
+            } else {
+                // Only update UI if we're in a connected state
+                if (peerConnection && 
+                    (peerConnection.iceConnectionState === 'connected' || 
+                     peerConnection.iceConnectionState === 'completed')) {
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                }
+            }
+        }
+        
+        function checkConnectionAfterResume() {
+            // If we're still "connected" on our end but the video isn't flowing,
+            // it might mean the connection needs to be reestablished
+            const videoElement = document.getElementById('remoteVideo');
+            if (videoElement && 
+                (!videoElement.srcObject || 
+                 videoElement.readyState < 2)) { // HAVE_CURRENT_DATA = 2
+                
+                console.log('Video not flowing after app resume, trying to reconnect');
+                handleConnectionFailure();
+            }
         }
 
         async function joinStream() {
@@ -112,82 +236,169 @@
                 return;
             }
 
-            alert(`Attempting to join stream: ${currentSessionId}`);
+            updateConnectionStatus('connecting', 'Attempting to join stream...');
+            reconnectAttempts = 0;
+            isReconnecting = false;
+            
             try {
-                // 1. Fetch the offer from the signaling server
-                const offerResponse = await fetch(`${signalingServerUrl}?action=receive&sessionId=${currentSessionId}&peer=viewer`);
-                if (!offerResponse.ok) {
-                     const errorText = await offerResponse.text();
-                    throw new Error(`Failed to fetch offer. Status: ${offerResponse.status}. ${errorText}`);
-                }
-                const message = await offerResponse.json();
+                await initiateConnection();
+            } catch (e) {
+                updateConnectionStatus('disconnected', `Error joining stream: ${e.message}`);
+                console.error('Join Stream Error:', e);
+                stopViewing();
+            }
+        }
 
-                if (!message || message.type !== 'offer') {
-                    alert('No offer found for this session ID, or invalid message type. Ensure the app has started streaming.');
-                    console.log('Received message:', message);
-                    return;
-                }
+        async function initiateConnection() {
+            let offerFound = false;
+            let maxWaitMs = 30000; // 30 seconds
+            let pollIntervalMs = 2000;
+            let waitedMs = 0;
+            let offerMessage = null;
 
-                // 2. Create RTCPeerConnection
-                peerConnection = new RTCPeerConnection(peerConnectionConfig);
-
-                // 3. Handle incoming tracks from the Cordova app
-                peerConnection.ontrack = event => {
-                    const remoteVideo = document.getElementById('remoteVideo');
-                    if (event.streams && event.streams[0]) {
-                        remoteVideo.srcObject = event.streams[0];
-                        console.log('Remote stream added to video element.');
-                    } else {
-                        // Fallback for older browsers
-                        if (!remoteVideo.srcObject && event.track) {
-                            let inboundStream = new MediaStream();
-                            inboundStream.addTrack(event.track);
-                            remoteVideo.srcObject = inboundStream;
-                             console.log('Remote track added to video element (fallback).');
+            updateConnectionStatus('connecting', 'Waiting for stream to start...');
+            
+            // --- Fix: Always fetch the latest offer, and ignore partial/invalid offers ---
+            while (!offerFound && waitedMs < maxWaitMs) {
+                try {
+                    const offerResponse = await fetch(`${signalingServerUrl}?action=receive&sessionId=${currentSessionId}&peer=viewer`);
+                    if (offerResponse.ok) {
+                        const message = await offerResponse.json();
+                        // Only accept if message is a valid offer and has a valid SDP
+                        if (message && message.type === 'offer' && message.offer && message.offer.sdp) {
+                            offerFound = true;
+                            offerMessage = message;
+                            break;
                         }
                     }
-                };
+                } catch (e) {
+                    // Ignore fetch errors during polling
+                }
+                if (!offerFound) {
+                    await new Promise(res => setTimeout(res, pollIntervalMs));
+                    waitedMs += pollIntervalMs;
+                }
+            }
+            if (!offerFound) {
+                throw new Error('No offer found for this session ID after waiting. Ensure the app has started streaming.');
+            }
 
-                // 4. Handle ICE candidates
-                peerConnection.onicecandidate = event => {
-                    if (event.candidate) {
-                        sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId: currentSessionId });
+            // 2. Create RTCPeerConnection
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            peerConnection = new RTCPeerConnection(peerConnectionConfig);
+
+            // 3. Handle incoming tracks from the Cordova app
+            peerConnection.ontrack = event => {
+                const remoteVideo = document.getElementById('remoteVideo');
+                remoteVideo.muted = true; // Allow autoplay in most browsers
+                if (event.streams && event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                    remoteVideo.play().catch(e => {
+                        console.warn('Autoplay failed:', e);
+                        updateConnectionStatus('connected', 'Stream connected. Click video to play.');
+                    });
+                    console.log('Remote stream added to video element.');
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                } else {
+                    // Fallback for older browsers
+                    if (!remoteVideo.srcObject && event.track) {
+                        let inboundStream = new MediaStream();
+                        inboundStream.addTrack(event.track);
+                        remoteVideo.srcObject = inboundStream;
+                        remoteVideo.play().catch(e => {
+                            console.warn('Autoplay failed (fallback):', e);
+                            updateConnectionStatus('connected', 'Stream connected. Click video to play.');
+                        });
+                        console.log('Remote track added to video element (fallback).');
+                        updateConnectionStatus('connected', 'Stream connected successfully!');
                     }
-                };
+                }
+            };
 
-                peerConnection.oniceconnectionstatechange = () => {
-                    console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
-                     if (peerConnection.iceConnectionState === 'failed') {
-                        alert('Stream connection failed (viewer).');
-                        stopViewing();
-                    } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
-                        alert('Stream disconnected or closed (viewer).');
-                        stopViewing();
-                    }
-                };
-                 peerConnection.onsignalingstatechange = () => {
-                    console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
-                };
+            // 4. Handle ICE candidates
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId: currentSessionId });
+                }
+            };
 
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
+                
+                if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                    isReconnecting = false;
+                    reconnectAttempts = 0;
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                } else if (peerConnection.iceConnectionState === 'failed') {
+                    updateConnectionStatus('disconnected', 'Stream connection failed. Attempting to reconnect...');
+                    handleConnectionFailure();
+                } else if (peerConnection.iceConnectionState === 'disconnected') {
+                    updateConnectionStatus('disconnected', 'Stream temporarily disconnected. Waiting for reconnection...');
+                    // Wait a bit to see if it auto-recovers before trying to reconnect
+                    setTimeout(() => {
+                        if (peerConnection && peerConnection.iceConnectionState === 'disconnected') {
+                            handleConnectionFailure();
+                        }
+                    }, 5000);
+                } else if (peerConnection.iceConnectionState === 'closed') {
+                    updateConnectionStatus('disconnected', 'Stream closed.');
+                    stopViewing();
+                }
+            };
+            
+            peerConnection.onsignalingstatechange = () => {
+                console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
+            };
 
-                // 5. Set the received offer as the remote description
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
-                console.log('Remote description (offer) set.');
+            // 5. Set the received offer as the remote description
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offerMessage.offer));
+            console.log('Remote description (offer) set.');
 
-                // 6. Create an SDP answer
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                console.log('Local description (answer) created.');
+            // 6. Create an SDP answer
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            console.log('Local description (answer) created.');
 
-                // 7. Send the answer to the signaling server (for the Cordova app)
-                sendSignalingMessage({ type: 'answer', answer: answer, sessionId: currentSessionId });
+            // 7. Send the answer to the signaling server (for the Cordova app)
+            const sendSuccess = await sendSignalingMessage({ type: 'answer', answer: answer, sessionId: currentSessionId });
+            if (!sendSuccess) {
+                throw new Error('Failed to send answer to signaling server');
+            }
 
-                // 8. Start listening for candidates from the Cordova app
-                listenForSignalingMessages(currentSessionId);
+            // 8. Start listening for candidates from the Cordova app
+            listenForSignalingMessages(currentSessionId);
+        }
 
-            } catch (e) {
-                alert('Error joining stream: ' + e.message);
-                console.error('Join Stream Error:', e);
+        async function handleConnectionFailure() {
+            if (isReconnecting || !currentSessionId) return;
+            
+            isReconnecting = true;
+            
+            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                reconnectAttempts++;
+                updateConnectionStatus('connecting', `Connection lost. Reconnecting... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+                
+                try {
+                    await initiateConnection();
+                } catch (e) {
+                    console.error('Reconnection attempt failed:', e);
+                    updateConnectionStatus('disconnected', `Reconnection failed: ${e.message}`);
+                    
+                    // Try again after a delay
+                    setTimeout(() => {
+                        isReconnecting = false;
+                        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                            handleConnectionFailure();
+                        } else {
+                            updateConnectionStatus('disconnected', 'Failed to reconnect after multiple attempts.');
+                            stopViewing();
+                        }
+                    }, 3000);
+                }
+            } else {
+                updateConnectionStatus('disconnected', 'Failed to reconnect after multiple attempts.');
                 stopViewing();
             }
         }
@@ -197,17 +408,30 @@
                 clearInterval(signalingPollIntervalId);
                 signalingPollIntervalId = null;
             }
+            
+            if (connectionCheckIntervalId) {
+                clearInterval(connectionCheckIntervalId);
+                connectionCheckIntervalId = null;
+            }
+            
             if (peerConnection) {
+                // Send a hangup message to inform the other side
+                if (currentSessionId) {
+                    sendSignalingMessage({ type: 'hangup', sessionId: currentSessionId });
+                }
                 peerConnection.close();
                 peerConnection = null;
             }
+            
             const remoteVideo = document.getElementById('remoteVideo');
             if (remoteVideo) remoteVideo.srcObject = null;
+            
             currentSessionId = null;
-            alert('Viewing stopped.');
-            // You might want to send a 'hangup' message to the signaling server
+            updateConnectionStatus('disconnected', 'Viewing stopped.');
+            isReconnecting = false;
+            reconnectAttempts = 0;
+            appInBackground = false;
         }
-
     </script>
 </body>
 </html>
