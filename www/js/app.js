@@ -8,6 +8,10 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 3;
 let isReconnecting = false;
 let keepAliveIntervalId;
+let appIsInBackground = false;
+let isStreaming = false;
+let backgroundResumeTimeout = null;
+let backgroundStartTime = 0;
 
 const peerConnectionConfig = {
     iceServers: [
@@ -60,6 +64,11 @@ async function listenForSignalingMessages(currentSessionId) {
     }
     
     const intervalId = setInterval(async () => {
+        // Don't poll when app is in background for more than 30 seconds
+        if (appIsInBackground && Date.now() - backgroundStartTime > 30000) {
+            return;
+        }
+        
         if (!peerConnection || peerConnection.signalingState === 'closed') {
             clearInterval(intervalId);
             return;
@@ -93,6 +102,13 @@ async function listenForSignalingMessages(currentSessionId) {
                     } else if (message.type === 'hangup') {
                         console.log('Received hangup from viewer');
                         stopWebRTCStream();
+                    } else if (message.type === 'connection-check') {
+                        // Respond to connection check requests from viewers
+                        sendSignalingMessage({ 
+                            type: 'connection-status', 
+                            status: appIsInBackground ? 'background' : 'foreground',
+                            sessionId: currentSessionId
+                        });
                     }
                 }
             } else if (response.status !== 404) {
@@ -109,13 +125,19 @@ async function listenForSignalingMessages(currentSessionId) {
     }
     
     keepAliveIntervalId = setInterval(() => {
+        // Don't send pings when in background for too long
+        if (appIsInBackground && Date.now() - backgroundStartTime > 30000) {
+            return;
+        }
+        
         if (peerConnection && sessionId && 
             (peerConnection.iceConnectionState === 'connected' || 
             peerConnection.iceConnectionState === 'completed')) {
             sendSignalingMessage({ 
                 type: 'ping', 
                 sessionId,
-                origin: 'initiator' // Mark as coming from the app (initiator)
+                origin: 'initiator', // Mark as coming from the app (initiator)
+                appState: appIsInBackground ? 'background' : 'foreground' // Add app state information
             });
             console.log('Sending ping to keep connection alive');
         }
@@ -125,9 +147,11 @@ async function listenForSignalingMessages(currentSessionId) {
 }
 
 // Update the capture button based on streaming state
-function updateCaptureButtonState(isStreaming) {
+function updateCaptureButtonState(streaming) {
+    isStreaming = streaming; // Track streaming state
+    
     const captureBtn = document.getElementById('capture-btn');
-    if (isStreaming) {
+    if (streaming) {
         captureBtn.classList.add('streaming');
     } else {
         captureBtn.classList.remove('streaming');
@@ -326,6 +350,54 @@ function stopWebRTCStream() {
     reconnectAttempts = 0;
 }
 
+// Pause the stream without fully stopping it (for quick resume)
+function pauseStream() {
+    // Pause local tracks
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            track.enabled = false;
+        });
+    }
+    
+    // Keep isStreaming flag but note we're paused
+    console.log('Stream paused');
+}
+
+// Resume a paused stream
+async function resumeStream() {
+    console.log('Attempting to resume stream...');
+    
+    try {
+        // If we don't have a local stream anymore or all tracks are ended, get a new one
+        let needNewStream = !localStream || 
+                        localStream.getTracks().every(track => track.readyState === 'ended');
+        
+        if (needNewStream) {
+            await initializeMediaStream();
+        } else {
+            // Just re-enable existing tracks
+            localStream.getTracks().forEach(track => {
+                track.enabled = true;
+            });
+        }
+        
+        // If peer connection was closed, restart it
+        if (!peerConnection || 
+            peerConnection.iceConnectionState === 'closed' || 
+            peerConnection.iceConnectionState === 'failed') {
+            setupPeerConnection();
+        }
+        
+        console.log('Stream resumed');
+    } catch (e) {
+        alert('Failed to resume stream: ' + e.message);
+        console.error('Resume stream error:', e);
+        
+        // If we can't resume, stop completely
+        stopWebRTCStream();
+    }
+}
+
 // Helper function to set up the peer connection
 function setupPeerConnection() {
     try {
@@ -506,6 +578,85 @@ function onDeviceReady() {
 
     // Add event listener for the Send button
     document.getElementById('send-btn').addEventListener('click', shareSessionLink);
+    
+    // Add event listeners for app going to background/foreground
+    document.addEventListener('pause', onAppPause, false);
+    document.addEventListener('resume', onAppResume, false);
+}
+
+// Handler for when app goes to background
+function onAppPause() {
+    console.log('App went to background');
+    appIsInBackground = true;
+    backgroundStartTime = Date.now();
+    
+    // If we're streaming, notify viewers that app is paused
+    if (isStreaming && sessionId) {
+        sendSignalingMessage({ 
+            type: 'app-state', 
+            state: 'background',
+            sessionId: sessionId
+        });
+    }
+    
+    // Note: We don't stop the stream immediately to allow for quick task switching
+    // Instead, set a timeout to stop if we stay in background too long
+    if (backgroundResumeTimeout) {
+        clearTimeout(backgroundResumeTimeout);
+    }
+    
+    backgroundResumeTimeout = setTimeout(() => {
+        if (appIsInBackground && isStreaming) {
+            console.log('App in background too long, stopping stream');
+            // Save session ID for potential resumption
+            const savedSessionId = sessionId;
+            
+            // Stop WebRTC connection but keep track that we were streaming
+            pauseStream();
+            
+            // Notify viewers the stream is fully stopped, not just paused
+            if (savedSessionId) {
+                sendSignalingMessage({ 
+                    type: 'app-state', 
+                    state: 'stream-ended',
+                    sessionId: savedSessionId
+                });
+            }
+        }
+    }, 30000); // 30 seconds
+}
+
+// Handler for when app comes back to foreground
+function onAppResume() {
+    console.log('App returned to foreground');
+    appIsInBackground = false;
+    
+    if (backgroundResumeTimeout) {
+        clearTimeout(backgroundResumeTimeout);
+        backgroundResumeTimeout = null;
+    }
+    
+    // If we were streaming when we went to background and connection is still active
+    // just notify viewers that we're back
+    if (isStreaming && sessionId && peerConnection && 
+        (peerConnection.iceConnectionState === 'connected' || 
+         peerConnection.iceConnectionState === 'completed')) {
+        
+        sendSignalingMessage({ 
+            type: 'app-state', 
+            state: 'foreground',
+            sessionId: sessionId
+        });
+    } 
+    // If our connection was closed/failed but we were streaming, try to resume
+    else if (isStreaming && (!peerConnection || 
+             peerConnection.iceConnectionState === 'disconnected' || 
+             peerConnection.iceConnectionState === 'failed' || 
+             peerConnection.iceConnectionState === 'closed')) {
+        
+        alert('Resuming stream after background...');
+        resumeStream();
+    }
 }
 
 function requestCameraPermission() {

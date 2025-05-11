@@ -38,6 +38,8 @@
         let reconnectAttempts = 0;
         const MAX_RECONNECT_ATTEMPTS = 3;
         let isReconnecting = false;
+        let connectionCheckIntervalId = null;
+        let appInBackground = false;
 
         // Check for sessionId in URL parameters
         document.addEventListener('DOMContentLoaded', function() {
@@ -135,6 +137,36 @@
                                     sessionId: currentSessionId,
                                     origin: 'viewer' // Mark as coming from the viewer
                                 });
+                                
+                                // If ping contains app state information, update our UI
+                                if (message.appState) {
+                                    appInBackground = (message.appState === 'background');
+                                    updateAppStateUI();
+                                }
+                            } else if (message.type === 'app-state') {
+                                // App is reporting its state explicitly
+                                if (message.state === 'background') {
+                                    appInBackground = true;
+                                    updateConnectionStatus('connecting', 'Mobile app is in background. Stream may pause temporarily.');
+                                } else if (message.state === 'foreground') {
+                                    appInBackground = false;
+                                    updateConnectionStatus('connected', 'Mobile app is active. Stream should resume shortly.');
+                                    
+                                    // Check connection after a short delay to ensure it's working
+                                    setTimeout(checkConnectionAfterResume, 2000);
+                                } else if (message.state === 'stream-ended') {
+                                    updateConnectionStatus('disconnected', 'Stream ended because mobile app was in background too long.');
+                                    stopViewing();
+                                }
+                            } else if (message.type === 'connection-status') {
+                                // Response to our connection-check request
+                                if (message.status === 'background') {
+                                    appInBackground = true;
+                                    updateConnectionStatus('connecting', 'Mobile app is in background. Stream may pause temporarily.');
+                                } else {
+                                    appInBackground = false;
+                                    updateConnectionStatus('connected', 'Connection verified, mobile app is active.');
+                                }
                             }
                         }
                     } else if (response.status !== 404) {
@@ -144,6 +176,53 @@
                     // console.warn('Polling error (viewer - can be normal if no messages):', e.message);
                 }
             }, 1000); // More frequent polling to catch messages quickly
+            
+            // Start periodic connection checks
+            if (connectionCheckIntervalId) {
+                clearInterval(connectionCheckIntervalId);
+            }
+            
+            connectionCheckIntervalId = setInterval(() => {
+                // Only check when we think we're connected but might have issues
+                if (peerConnection && 
+                    (peerConnection.iceConnectionState === 'disconnected' || 
+                     peerConnection.iceConnectionState === 'completed' ||
+                     peerConnection.iceConnectionState === 'connected')) {
+                    
+                    // Send a connection check request through signaling
+                    sendSignalingMessage({ 
+                        type: 'connection-check', 
+                        sessionId: currentSessionId,
+                        timestamp: Date.now()
+                    });
+                }
+            }, 15000); // Check every 15 seconds
+        }
+
+        function updateAppStateUI() {
+            if (appInBackground) {
+                updateConnectionStatus('connecting', 'Mobile app is in background. Stream may pause temporarily.');
+            } else {
+                // Only update UI if we're in a connected state
+                if (peerConnection && 
+                    (peerConnection.iceConnectionState === 'connected' || 
+                     peerConnection.iceConnectionState === 'completed')) {
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                }
+            }
+        }
+        
+        function checkConnectionAfterResume() {
+            // If we're still "connected" on our end but the video isn't flowing,
+            // it might mean the connection needs to be reestablished
+            const videoElement = document.getElementById('remoteVideo');
+            if (videoElement && 
+                (!videoElement.srcObject || 
+                 videoElement.readyState < 2)) { // HAVE_CURRENT_DATA = 2
+                
+                console.log('Video not flowing after app resume, trying to reconnect');
+                handleConnectionFailure();
+            }
         }
 
         async function joinStream() {
@@ -293,7 +372,7 @@
         }
 
         async function handleConnectionFailure() {
-            if (isReconnecting) return;
+            if (isReconnecting || !currentSessionId) return;
             
             isReconnecting = true;
             
@@ -329,6 +408,12 @@
                 clearInterval(signalingPollIntervalId);
                 signalingPollIntervalId = null;
             }
+            
+            if (connectionCheckIntervalId) {
+                clearInterval(connectionCheckIntervalId);
+                connectionCheckIntervalId = null;
+            }
+            
             if (peerConnection) {
                 // Send a hangup message to inform the other side
                 if (currentSessionId) {
@@ -337,12 +422,15 @@
                 peerConnection.close();
                 peerConnection = null;
             }
+            
             const remoteVideo = document.getElementById('remoteVideo');
             if (remoteVideo) remoteVideo.srcObject = null;
+            
             currentSessionId = null;
             updateConnectionStatus('disconnected', 'Viewing stopped.');
             isReconnecting = false;
             reconnectAttempts = 0;
+            appInBackground = false;
         }
     </script>
 </body>
