@@ -8,7 +8,12 @@
 // This server needs to run persistently. Use a process manager like Supervisor in production.
 // Configure your web server (Apache/Nginx) to proxy WebSocket connections to this server if needed (e.g., for wss://).
 
-require dirname(__DIR__) . '../../vendor/autoload.php'; // Adjust path to autoload.php based on your project structure
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
+//die(__DIR__.'/vendor/autoload.php');
+require __DIR__ . '/vendor/autoload.php'; // Adjust path to autoload.php based on your project structure
 
 use Ratchet\MessageComponentInterface;
 use Ratchet\ConnectionInterface;
