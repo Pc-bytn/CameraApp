@@ -32,20 +32,19 @@
     <script src="PRIVATE_URL.JS"></script>
     <script>
         let peerConnection;
-        const signalingServerUrl = window.SIGNALING_SERVER_URL; // IMPORTANT: Replace with your actual PHP server URL
+        const webSocketSignalingUrl = window.WEBSOCKET_SIGNALING_URL;
         let currentSessionId;
-        let signalingPollIntervalId;
         let reconnectAttempts = 0;
         const MAX_RECONNECT_ATTEMPTS = 3;
         let isReconnecting = false;
+        let websocket;
+        let keepAliveIntervalId;
 
-        // Check for sessionId in URL parameters
         document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
             const sessionIdFromUrl = urlParams.get('sessionId');
             if (sessionIdFromUrl) {
                 document.getElementById('sessionIdInput').value = sessionIdFromUrl;
-                // Optionally auto-join the stream if a sessionId is provided
                 joinStream();
             }
         });
@@ -54,7 +53,6 @@
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                // Add free TURN servers for better connectivity
                 {
                     urls: 'turn:openrelay.metered.ca:80',
                     username: 'openrelayproject',
@@ -76,74 +74,106 @@
             statusElement.className = status;
         }
 
-        async function sendSignalingMessage(message) {
-            try {
-                // When viewer sends, it's for the initiator
-                const response = await fetch(`${signalingServerUrl}?action=send&sessionId=${message.sessionId}`, { // Pass sessionId in query
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(message),
-                });
-                if (!response.ok) {
-                    throw new Error(`Signaling server error: ${response.status} ${await response.text()}`);
-                }
-                console.log('Signaling message sent (viewer):', message.type);
-            } catch (e) {
-                console.error('Send signaling error (viewer):', e);
-                updateConnectionStatus('disconnected', `Error sending signaling message: ${e.message}`);
+        function sendSignalingMessage(message) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                message.sessionId = currentSessionId;
+                message.origin = 'viewer';
+                websocket.send(JSON.stringify(message));
+                console.log('Signaling message sent via WebSocket (viewer):', message.type);
+                return true;
+            } else {
+                console.error('WebSocket not connected, cannot send message (viewer):', message.type);
+                updateConnectionStatus('disconnected', 'WebSocket not connected. Cannot send message.');
                 return false;
             }
-            return true;
         }
 
-        async function listenForSignalingMessages(sessionId) {
-            if (signalingPollIntervalId) {
-                clearInterval(signalingPollIntervalId);
+        function connectWebSocketAndJoin() {
+            if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
+                console.log('WebSocket already connected or connecting.');
+                return;
             }
-            
-            signalingPollIntervalId = setInterval(async () => {
-                if (!peerConnection || peerConnection.signalingState === 'closed') {
-                    clearInterval(signalingPollIntervalId);
-                    return;
-                }
-                try {
-                    // 'viewer' tells the server we are the one viewing the stream
-                    const response = await fetch(`${signalingServerUrl}?action=receive&sessionId=${sessionId}&peer=viewer`);
-                    if (response.ok) {
-                        const message = await response.json();
-                        if (message) {
-                            console.log('Received signaling message (viewer):', message);
-                            if (message.type === 'offer') { // Should have already received this to initiate joinStream
-                                console.warn("Received offer again, already processed or should be initial fetch.");
-                            } else if (message.type === 'candidate' && message.candidate) {
-                                if (peerConnection.remoteDescription) { // Ensure offer (remote desc) is set
-                                    try {
-                                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-                                        console.log('Added remote ICE candidate (from initiator).');
-                                    } catch (e) {
-                                        console.error('Error adding received ICE candidate (viewer):', e);
-                                    }
-                                } else {
-                                     console.warn('Received ICE candidate but remote description (offer) not set yet.');
+
+            websocket = new WebSocket(webSocketSignalingUrl);
+
+            websocket.onopen = () => {
+                console.log('WebSocket connection established (viewer).');
+                updateConnectionStatus('connecting', 'WebSocket connected. Registering session...');
+                websocket.send(JSON.stringify({
+                    type: 'register',
+                    sessionId: currentSessionId,
+                    peerType: 'viewer'
+                }));
+
+                if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+                keepAliveIntervalId = setInterval(() => {
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        sendSignalingMessage({ type: 'ping' });
+                        console.log('Sending ping (viewer)');
+                    }
+                }, 25000);
+            };
+
+            websocket.onmessage = async (event) => {
+                const message = JSON.parse(event.data);
+                console.log('Received WebSocket message (viewer):', message);
+
+                switch (message.type) {
+                    case 'offer':
+                        if (message.offer) {
+                            updateConnectionStatus('connecting', 'Offer received. Processing...');
+                            await handleOffer(message.offer);
+                        } else {
+                            console.warn("Offer message received without offer data", message);
+                        }
+                        break;
+                    case 'candidate':
+                        if (peerConnection && message.candidate) {
+                            if (peerConnection.remoteDescription) {
+                                try {
+                                    await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                                    console.log('Added remote ICE candidate (viewer).');
+                                } catch (e) {
+                                    console.error('Error adding received ICE candidate (viewer):', e);
                                 }
-                            } else if (message.type === 'ping') {
-                                // Send pong response to keep connection alive
-                                sendSignalingMessage({ 
-                                    type: 'pong', 
-                                    sessionId: currentSessionId,
-                                    origin: 'viewer' // Mark as coming from the viewer
-                                });
+                            } else {
+                                console.warn('Received ICE candidate (viewer) but remote description not set yet.');
                             }
                         }
-                    } else if (response.status !== 404) {
-                         console.error('Error fetching signaling messages (viewer):', response.status, await response.text());
-                    }
-                } catch (e) {
-                    // console.warn('Polling error (viewer - can be normal if no messages):', e.message);
+                        break;
+                    case 'hangup':
+                        console.log('Received hangup from initiator/server (viewer)');
+                        updateConnectionStatus('disconnected', 'Stream ended by initiator.');
+                        stopViewing(false);
+                        break;
+                    case 'pong':
+                        console.log('Received pong from server (viewer) - connection alive');
+                        break;
+                    case 'error':
+                        updateConnectionStatus('disconnected', `Server error: ${message.message}`);
+                        console.error('Server error message:', message.message);
+                        stopViewing(false);
+                        break;
+                    case 'session_not_found':
+                        updateConnectionStatus('disconnected', `Session ID ${currentSessionId} not found or initiator not connected.`);
+                        console.warn(`Session ${currentSessionId} not found or initiator not connected.`);
+                        stopViewing(false);
+                        break;
                 }
-            }, 1000); // More frequent polling to catch messages quickly
+            };
+
+            websocket.onerror = (error) => {
+                console.error('WebSocket error (viewer):', error);
+                updateConnectionStatus('disconnected', 'WebSocket connection error. Please try again.');
+                stopViewing(false);
+            };
+
+            websocket.onclose = (event) => {
+                console.log('WebSocket connection closed (viewer):', event.reason, `Code: ${event.code}`);
+                if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+                if (peerConnection && peerConnection.iceConnectionState !== 'closed') {
+                }
+            };
         }
 
         async function joinStream() {
@@ -157,91 +187,51 @@
                 return;
             }
 
-            updateConnectionStatus('connecting', 'Attempting to join stream...');
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.onclose = null;
+                websocket.close();
+            }
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+
+            updateConnectionStatus('connecting', 'Attempting to join stream via WebSocket...');
             reconnectAttempts = 0;
             isReconnecting = false;
             
-            try {
-                await initiateConnection();
-            } catch (e) {
-                updateConnectionStatus('disconnected', `Error joining stream: ${e.message}`);
-                console.error('Join Stream Error:', e);
-                stopViewing();
-            }
+            connectWebSocketAndJoin();
         }
 
-        async function initiateConnection() {
-            let offerFound = false;
-            let maxWaitMs = 30000; // 30 seconds
-            let pollIntervalMs = 2000;
-            let waitedMs = 0;
-            let offerMessage = null;
-
-            updateConnectionStatus('connecting', 'Waiting for stream to start...');
-            
-            // --- Fix: Always fetch the latest offer, and ignore partial/invalid offers ---
-            while (!offerFound && waitedMs < maxWaitMs) {
-                try {
-                    const offerResponse = await fetch(`${signalingServerUrl}?action=receive&sessionId=${currentSessionId}&peer=viewer`);
-                    if (offerResponse.ok) {
-                        const message = await offerResponse.json();
-                        // Only accept if message is a valid offer and has a valid SDP
-                        if (message && message.type === 'offer' && message.offer && message.offer.sdp) {
-                            offerFound = true;
-                            offerMessage = message;
-                            break;
-                        }
-                    }
-                } catch (e) {
-                    // Ignore fetch errors during polling
-                }
-                if (!offerFound) {
-                    await new Promise(res => setTimeout(res, pollIntervalMs));
-                    waitedMs += pollIntervalMs;
-                }
-            }
-            if (!offerFound) {
-                throw new Error('No offer found for this session ID after waiting. Ensure the app has started streaming.');
-            }
-
-            // 2. Create RTCPeerConnection
+        async function handleOffer(offer) {
             if (peerConnection) {
                 peerConnection.close();
             }
             peerConnection = new RTCPeerConnection(peerConnectionConfig);
 
-            // 3. Handle incoming tracks from the Cordova app
             peerConnection.ontrack = event => {
                 const remoteVideo = document.getElementById('remoteVideo');
-                remoteVideo.muted = true; // Allow autoplay in most browsers
+                remoteVideo.muted = true;
                 if (event.streams && event.streams[0]) {
                     remoteVideo.srcObject = event.streams[0];
-                    remoteVideo.play().catch(e => {
-                        console.warn('Autoplay failed:', e);
-                        updateConnectionStatus('connected', 'Stream connected. Click video to play.');
-                    });
-                    console.log('Remote stream added to video element.');
                     updateConnectionStatus('connected', 'Stream connected successfully!');
+                    reconnectAttempts = 0;
+                    isReconnecting = false;
                 } else {
-                    // Fallback for older browsers
                     if (!remoteVideo.srcObject && event.track) {
                         let inboundStream = new MediaStream();
                         inboundStream.addTrack(event.track);
                         remoteVideo.srcObject = inboundStream;
-                        remoteVideo.play().catch(e => {
-                            console.warn('Autoplay failed (fallback):', e);
-                            updateConnectionStatus('connected', 'Stream connected. Click video to play.');
-                        });
-                        console.log('Remote track added to video element (fallback).');
                         updateConnectionStatus('connected', 'Stream connected successfully!');
+                        reconnectAttempts = 0;
+                        isReconnecting = false;
                     }
                 }
             };
 
-            // 4. Handle ICE candidates
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
-                    sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId: currentSessionId });
+                    sendSignalingMessage({ type: 'candidate', candidate: event.candidate });
                 }
             };
 
@@ -249,98 +239,86 @@
                 console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
                 
                 if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
-                    isReconnecting = false;
-                    reconnectAttempts = 0;
                     updateConnectionStatus('connected', 'Stream connected successfully!');
+                    reconnectAttempts = 0;
+                    isReconnecting = false;
                 } else if (peerConnection.iceConnectionState === 'failed') {
-                    updateConnectionStatus('disconnected', 'Stream connection failed. Attempting to reconnect...');
+                    updateConnectionStatus('disconnected', 'Stream connection failed.');
                     handleConnectionFailure();
                 } else if (peerConnection.iceConnectionState === 'disconnected') {
-                    updateConnectionStatus('disconnected', 'Stream temporarily disconnected. Waiting for reconnection...');
-                    // Wait a bit to see if it auto-recovers before trying to reconnect
-                    setTimeout(() => {
-                        if (peerConnection && peerConnection.iceConnectionState === 'disconnected') {
-                            handleConnectionFailure();
-                        }
-                    }, 5000);
+                    updateConnectionStatus('connecting', 'Stream temporarily disconnected. Attempting to recover...');
                 } else if (peerConnection.iceConnectionState === 'closed') {
                     updateConnectionStatus('disconnected', 'Stream closed.');
-                    stopViewing();
                 }
             };
-            
+
             peerConnection.onsignalingstatechange = () => {
                 console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
             };
 
-            // 5. Set the received offer as the remote description
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offerMessage.offer));
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             console.log('Remote description (offer) set.');
 
-            // 6. Create an SDP answer
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             console.log('Local description (answer) created.');
 
-            // 7. Send the answer to the signaling server (for the Cordova app)
-            const sendSuccess = await sendSignalingMessage({ type: 'answer', answer: answer, sessionId: currentSessionId });
+            const sendSuccess = sendSignalingMessage({ type: 'answer', answer: answer });
             if (!sendSuccess) {
-                throw new Error('Failed to send answer to signaling server');
+                updateConnectionStatus('disconnected', 'Failed to send answer. Please try again.');
+                throw new Error('Failed to send answer via WebSocket.');
             }
-
-            // 8. Start listening for candidates from the Cordova app
-            listenForSignalingMessages(currentSessionId);
         }
 
         async function handleConnectionFailure() {
             if (isReconnecting) return;
             
             isReconnecting = true;
+            reconnectAttempts++;
             
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                reconnectAttempts++;
-                updateConnectionStatus('connecting', `Connection lost. Reconnecting... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-                
-                try {
-                    await initiateConnection();
-                } catch (e) {
-                    console.error('Reconnection attempt failed:', e);
-                    updateConnectionStatus('disconnected', `Reconnection failed: ${e.message}`);
-                    
-                    // Try again after a delay
-                    setTimeout(() => {
-                        isReconnecting = false;
-                        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                            handleConnectionFailure();
-                        } else {
-                            updateConnectionStatus('disconnected', 'Failed to reconnect after multiple attempts.');
-                            stopViewing();
-                        }
-                    }, 3000);
-                }
+            if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                updateConnectionStatus('connecting', `WebRTC connection failed. Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                sendSignalingMessage({ type: 'request_ice_restart' });
+                console.log("WebRTC connection failed. Viewer is waiting for new offer for ICE restart.");
+                setTimeout(() => {
+                    if (isReconnecting && peerConnection && peerConnection.iceConnectionState !== 'connected' && peerConnection.iceConnectionState !== 'completed') {
+                        updateConnectionStatus('disconnected', `Reconnect attempt ${reconnectAttempts} timed out. Still disconnected.`);
+                    }
+                }, 15000);
             } else {
-                updateConnectionStatus('disconnected', 'Failed to reconnect after multiple attempts.');
-                stopViewing();
+                updateConnectionStatus('disconnected', 'Failed to reconnect WebRTC stream after multiple attempts.');
+                console.error('Failed to reconnect WebRTC stream.');
+                stopViewing(false);
             }
         }
 
-        function stopViewing() {
-            if (signalingPollIntervalId) {
-                clearInterval(signalingPollIntervalId);
-                signalingPollIntervalId = null;
+        function stopViewing(notifyServer = true) {
+            if (keepAliveIntervalId) {
+                clearInterval(keepAliveIntervalId);
+                keepAliveIntervalId = null;
             }
+
+            if (notifyServer && websocket && websocket.readyState === WebSocket.OPEN) {
+                sendSignalingMessage({ type: 'hangup' });
+                console.log('Sent hangup message via WebSocket (viewer).');
+            }
+
             if (peerConnection) {
-                // Send a hangup message to inform the other side
-                if (currentSessionId) {
-                    sendSignalingMessage({ type: 'hangup', sessionId: currentSessionId });
-                }
                 peerConnection.close();
                 peerConnection = null;
             }
+            if (websocket) {
+                if (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING) {
+                    websocket.onclose = null; 
+                    websocket.close();
+                }
+                websocket = null;
+            }
+
             const remoteVideo = document.getElementById('remoteVideo');
             if (remoteVideo) remoteVideo.srcObject = null;
-            currentSessionId = null;
             updateConnectionStatus('disconnected', 'Viewing stopped.');
+            document.getElementById('connectionStatus').style.display = 'block';
             isReconnecting = false;
             reconnectAttempts = 0;
         }

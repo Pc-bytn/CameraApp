@@ -33,9 +33,13 @@ jobs:
       # - name: Install Android SDK
       #   uses: android-actions/setup-android@v3
 
-      - name: Replace PRIVATE_WEB_URL in app.js
+      - name: Replace WEBSOCKET_PRIVATE_URL in app.js
         run: |
-          sed -i "s|PRIVATE_WEB_URL|${{ secrets.PRIVATE_WEB_URL }}|g" www/js/app.js
+          sed -i "s|WEBSOCKET_PRIVATE_URL|${{ secrets.WEBSOCKET_PRIVATE_URL }}|g" www/js/app.js
+
+      # - name: Replace PRIVATE_WEB_URL in app.js
+      #   run: |
+      #     sed -i "s|PRIVATE_WEB_URL|${{ secrets.PRIVATE_WEB_URL }}|g" www/js/app.js
 
       - name: Install project dependencies
         run: npm install || echo "No npm dependencies"
