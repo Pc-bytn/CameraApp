@@ -3,85 +3,115 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Stream Viewer</title>
-    <style>
-        body { font-family: sans-serif; margin: 20px; }
-        video { border: 1px solid black; max-width: 100%; background-color: #333; }
-        input, button { padding: 10px; margin: 5px; font-size: 1em; }
+    <title>WebRTC Stream Viewer</title>    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 20px;
+            background-color: #f8f9fa;
+            color: #343a40;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        video { 
+            border: none; 
+            max-width: 100%; 
+            background-color: #333;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        input, button { 
+            padding: 10px 15px; 
+            margin: 5px; 
+            font-size: 0.95em;
+            border-radius: 6px;
+            border: 1px solid #ced4da;
+            outline: none;
+        }
+        input {
+            min-width: 250px;
+            background-color: #fff;
+        }
+        button {
+            background-color: #4682B4;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #3a6d99;
+        }
         #connectionStatus {
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 5px;
-            font-weight: bold;
+            padding: 12px;
+            margin: 15px 0;
+            border-radius: 6px;
+            font-weight: 500;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .connecting { background-color: #FFF3CD; color: #856404; }
         .connected { background-color: #D4EDDA; color: #155724; }
         .disconnected { background-color: #F8D7DA; color: #721C24; }
         #videoDebugInfo {
-            margin-top: 10px;
-            padding: 10px;
+            margin-top: 15px;
+            padding: 12px;
             background-color: #e9ecef;
-            border-radius: 5px;
-        }
-        #mediaControls button:disabled {
-            background-color: #cccccc;
-            color: #666666;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.9em;
+            max-height: 200px;
+            overflow-y: auto;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }        #mediaControls button:disabled {
+            background-color: #e2e6ea;
+            color: #a0a5ab;
             cursor: not-allowed;
         }
         #clipsList, #screenshotsList {
-            margin-top: 10px;
-            padding: 10px;
-            background-color: #f8f9fa;
-            border-radius: 5px;
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
         }
         #clipsList h3, #screenshotsList h3 {
             margin-top: 0;
+            color: #2c3e50;
+            font-weight: 500;
         }
         #clipsList ul, #screenshotsList ul {
             list-style-type: none;
             padding-left: 0;
-        }
-        #clipsList li, #screenshotsList li {
-            margin-bottom: 5px;
-            display: flex; /* Align items in a row */
-            align-items: center; /* Vertically center items */
-        }
-        #clipsList li > *, #screenshotsList li > * {
-            margin-right: 10px; /* Add some space between elements */
-        }
-        .media-item-actions button {
-            padding: 3px 8px;
-            font-size: 0.8em;
-            margin-left: 5px;
-        }
-        .media-item-actions input[type="text"] {
-            padding: 3px;
-            font-size: 0.8em;
-            width: 100px; /* Adjust as needed */
-        }
-        /* Suggested CSS for viewer.html media item controls */
-        #clipsList ul, #screenshotsList ul {
-            list-style-type: none;
-            padding: 0;
-        }
-        #clipsList li, #screenshotsList li {
+        }        #clipsList li, #screenshotsList li {
             background-color: #f9f9f9;
-            border: 1px solid #ddd;
-            padding: 10px;
-            margin-bottom: 8px;
-            border-radius: 4px;
-            display: flex; /* Align info and actions */
-            justify-content: space-between; /* Space them out */
-            align-items: center; /* Vertically align */
+            border: 1px solid #eaeaea;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background-color 0.2s;
+        }
+        #clipsList li:hover, #screenshotsList li:hover {
+            background-color: #f3f4f6;
         }
         .media-item-info {
-            flex-grow: 1; /* Allow info to take available space */
-            margin-right: 10px; /* Add some space before actions */
+            flex-grow: 1;
+            margin-right: 15px;
         }
         .media-item-info a {
-            color: #007bff;
+            color: #3a80c5;
             text-decoration: none;
-            word-break: break-all; /* Prevent long names from breaking layout */
+            word-break: break-all;
+            font-weight: 500;
         }
         .media-item-info a:hover {
             text-decoration: underline;
@@ -89,94 +119,135 @@
         .media-item-actions {
             display: flex;
             align-items: center;
-            gap: 8px; /* Space between action elements */
-            flex-shrink: 0; /* Prevent actions from shrinking too much */
-        }
-        .media-item-actions .rename-input {
-            padding: 6px;
-            border: 1px solid #ccc;
-            border-radius: 3px;
-            width: 150px; /* Adjust as needed */
+            gap: 10px;
+            flex-shrink: 0;
+        }        .media-item-actions .rename-input {
+            padding: 8px 10px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            width: 170px;
+            font-size: 0.9em;
         }
         .media-item-actions button {
-            padding: 6px 10px;
-            border: 1px solid #ccc;
-            background-color: #e7e7e7;
-            border-radius: 3px;
+            padding: 8px 12px;
+            border: none;
+            background-color: #6c757d;
+            color: white;
+            border-radius: 4px;
             cursor: pointer;
-            white-space: nowrap; /* Prevent button text from wrapping */
+            white-space: nowrap;
+            font-size: 0.9em;
+            transition: background-color 0.2s;
         }
         .media-item-actions button:hover {
-            background-color: #d7d7d7;
+            background-color: #5a6268;
         }
         .media-item-actions button:disabled {
-            background-color: #f0f0f0;
-            color: #aaa;
+            background-color: #e9ecef;
+            color: #adb5bd;
             cursor: not-allowed;
+        }
+        .media-item-actions .rename-button {
+            background-color: #5cb85c;
+        }
+        .media-item-actions .rename-button:hover {
+            background-color: #4cae4c;
+        }
+        .media-item-actions .upload-button {
+            background-color: #428bca;
+        }
+        .media-item-actions .upload-button:hover {
+            background-color: #3778b3;
         }
         .media-item-status {
             font-size: 0.9em;
-            min-width: 100px; /* Give status some space */
+            min-width: 100px;
             text-align: left;
-        }
-        .media-item-status.uploading {
+            font-weight: 500;
+        }        .media-item-status.uploading {
             color: #007bff;
         }
         .media-item-status.uploaded {
-            color: green;
+            color: #28a745;
         }
         .media-item-status.failed {
-            color: red;
+            color: #dc3545;
         }
 
-        /* Ensure mediaControls section is well-spaced */
+        /* Modern media controls section */
         #mediaControls {
             margin-top: 20px;
-            padding: 15px;
-            background-color: #f0f0f0;
-            border-radius: 5px;
+            padding: 18px;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
         }
-        #mediaControls h2, #mediaControls h3 {
-            margin-top: 0;
+        #mediaControls button {
+            min-width: 120px;
+            text-align: center;
         }
-        #clipStatus { /* General status message styling */
-            margin-top: 10px;
-            font-weight: bold;
+        #startClipButton {
+            background-color: #dc3545;
+        }
+        #startClipButton:hover {
+            background-color: #c82333;
+        }
+        #endClipButton {
+            background-color: #ffc107;
+            color: #212529;
+        }
+        #endClipButton:hover {
+            background-color: #e0a800;
+        }
+        #screenshotButton {
+            background-color: #17a2b8;
+        }
+        #screenshotButton:hover {
+            background-color: #138496;
+        }
+        #clipStatus {
+            margin-left: 10px;
+            font-style: italic;
+            flex-grow: 1;
         }
     </style>
 </head>
-<body>
-    <h1>WebRTC Stream Viewer</h1>
-    <div>
-        <input type="text" id="sessionIdInput" placeholder="Enter Session ID from App">
-        <button onclick="joinStream()">Join Stream</button>
-        <button onclick="stopViewing()">Stop Viewing</button>
-    </div>
-    <div id="connectionStatus" style="display: none;"></div>
-    <video id="remoteVideo" autoplay playsinline controls muted></video>
-    <div id="videoDebugInfo" style="display: none;"></div>
-
-    <div id="mediaControls" style="margin-top: 15px;">
-        <button id="startClipButton" onclick="startClip()" disabled>Start Clip</button>
-        <button id="endClipButton" onclick="endClip()" disabled>End Clip</button>
-        <button id="screenshotButton" onclick="takeScreenshot()" disabled>Screenshot</button>
-        <span id="clipStatus" style="margin-left: 10px; font-style: italic;"></span>
-    </div>
-
-    <div id="capturedMedia" style="margin-top: 20px;">
-        <div id="clipsList" style="display: none;">
-            <h3>Captured Clips:</h3>
-            <ul></ul>
+<body>    <div class="container">
+        <h1>WebRTC Stream Viewer</h1>
+        <div class="connection-controls">
+            <input type="text" id="sessionIdInput" placeholder="Enter Session ID from App">
+            <button onclick="joinStream()">Join Stream</button>
+            <button onclick="stopViewing()">Stop Viewing</button>
         </div>
-        <div id="screenshotsList" style="display: none;">
-            <h3>Captured Screenshots:</h3>
-            <ul></ul>
+        <div id="connectionStatus" style="display: none;"></div>
+        <video id="remoteVideo" autoplay playsinline controls muted></video>
+        <div id="videoDebugInfo" style="display: none;"></div>
+
+        <div id="mediaControls">
+            <button id="startClipButton" onclick="startClip()" disabled>Start Clip</button>
+            <button id="endClipButton" onclick="endClip()" disabled>End Clip</button>
+            <button id="screenshotButton" onclick="takeScreenshot()" disabled>Screenshot</button>
+            <span id="clipStatus"></span>
+        </div>
+
+        <div id="capturedMedia">
+            <div id="clipsList" style="display: none;">
+                <h3>Captured Clips</h3>
+                <ul></ul>
+            </div>
+            <div id="screenshotsList" style="display: none;">
+                <h3>Captured Screenshots</h3>
+                <ul></ul>
+            </div>
         </div>
     </div>
     
     <script src="PRIVATE_URL.JS"></script>
-    <script>
-        let peerConnection;
+    <script>        let peerConnection;
         const webSocketSignalingUrl = window.WEBSOCKET_SIGNALING_URL;
         let currentSessionId;
         let reconnectAttempts = 0;
@@ -186,15 +257,39 @@
         let keepAliveIntervalId;
         let reconnectTimeoutId = null;
         const RECONNECT_TIMEOUT = 15000; // 15 seconds timeout for reconnection attempts
+        let isDebugMode = false; // Debug mode toggle
 
         let mediaRecorder;
         let recordedChunks = [];
         let streamStartTime;
-        let clipStartTime;
-
-        document.addEventListener('DOMContentLoaded', function() {
+        let clipStartTime;        document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
             const sessionIdFromUrl = urlParams.get('sessionId');
+            const debugParam = urlParams.get('debug');
+            
+            // Initialize debug mode from URL parameter if present
+            if (debugParam === '1' || debugParam === 'true') {
+                isDebugMode = true;
+                console.log('Debug mode enabled by URL parameter');
+            }
+            
+            // Add keyboard shortcut for debug mode (Ctrl+Shift+D)
+            document.addEventListener('keydown', function(e) {
+                if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+                    isDebugMode = !isDebugMode;
+                    const debugElement = document.getElementById('videoDebugInfo');
+                    
+                    if (isDebugMode) {
+                        debugElement.style.display = 'block';
+                        console.log('Debug mode enabled by keyboard shortcut');
+                    } else {
+                        debugElement.style.display = 'none';
+                        console.log('Debug mode disabled by keyboard shortcut');
+                    }
+                    
+                    e.preventDefault();
+                }
+            });
             
             // Check browser compatibility
             checkMediaCompatibility();
@@ -235,14 +330,17 @@
             document.getElementById('startClipButton').disabled = !connected;
             // endClipButton is handled by startClip/endClip logic
             document.getElementById('screenshotButton').disabled = !connected;
-        }
-
-        function updateVideoDebugInfo(message) {
-            const debugElement = document.getElementById('videoDebugInfo');
-            const timestamp = new Date().toLocaleTimeString();
-            debugElement.style.display = 'block';
-            debugElement.innerHTML += `<p>${timestamp}: ${message}</p>`;
+        }        function updateVideoDebugInfo(message) {
+            // Always log to console regardless of debug mode
             console.log(`Video Debug: ${message}`);
+            
+            // Only update UI if debug mode is enabled
+            if (isDebugMode) {
+                const debugElement = document.getElementById('videoDebugInfo');
+                const timestamp = new Date().toLocaleTimeString();
+                debugElement.style.display = 'block';
+                debugElement.innerHTML += `<p>${timestamp}: ${message}</p>`;
+            }
         }
 
         function sendSignalingMessage(message) {
@@ -586,9 +684,7 @@
             if (mediaRecorder && mediaRecorder.state !== "inactive") {
                 mediaRecorder.stop();
             }
-        }
-
-        function checkMediaCompatibility() {
+        }        function checkMediaCompatibility() {
             updateVideoDebugInfo(`Browser: ${navigator.userAgent}`);
             if (navigator.mediaDevices) {
                 updateVideoDebugInfo("mediaDevices API available");
@@ -607,6 +703,10 @@
             } else {
                 updateVideoDebugInfo("MediaStream API NOT available");
             }
+            
+            // Apply appropriate display setting based on debug mode
+            const debugElement = document.getElementById('videoDebugInfo');
+            debugElement.style.display = isDebugMode ? 'block' : 'none';
         }
 
         // FR008 & FR010: Viewer Live Clipping and Media Controls
