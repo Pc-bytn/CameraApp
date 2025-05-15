@@ -23,6 +23,34 @@
             background-color: #e9ecef;
             border-radius: 5px;
         }
+        #mediaControls button:disabled {
+            background-color: #cccccc;
+            color: #666666;
+            cursor: not-allowed;
+        }
+        #clipsList, #screenshotsList {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        #clipsList h3, #screenshotsList h3 {
+            margin-top: 0;
+        }
+        #clipsList ul, #screenshotsList ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        #clipsList li, #screenshotsList li {
+            margin-bottom: 5px;
+        }
+        #clipsList a, #screenshotsList a {
+            text-decoration: none;
+            color: #007bff;
+        }
+        #clipsList a:hover, #screenshotsList a:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
@@ -35,6 +63,24 @@
     <div id="connectionStatus" style="display: none;"></div>
     <video id="remoteVideo" autoplay playsinline controls muted></video>
     <div id="videoDebugInfo" style="display: none;"></div>
+
+    <div id="mediaControls" style="margin-top: 15px;">
+        <button id="startClipButton" onclick="startClip()" disabled>Start Clip</button>
+        <button id="endClipButton" onclick="endClip()" disabled>End Clip</button>
+        <button id="screenshotButton" onclick="takeScreenshot()" disabled>Screenshot</button>
+        <span id="clipStatus" style="margin-left: 10px; font-style: italic;"></span>
+    </div>
+
+    <div id="capturedMedia" style="margin-top: 20px;">
+        <div id="clipsList" style="display: none;">
+            <h3>Captured Clips:</h3>
+            <ul></ul>
+        </div>
+        <div id="screenshotsList" style="display: none;">
+            <h3>Captured Screenshots:</h3>
+            <ul></ul>
+        </div>
+    </div>
     
     <script src="PRIVATE_URL.JS"></script>
     <script>
@@ -48,6 +94,11 @@
         let keepAliveIntervalId;
         let reconnectTimeoutId = null;
         const RECONNECT_TIMEOUT = 15000; // 15 seconds timeout for reconnection attempts
+
+        let mediaRecorder;
+        let recordedChunks = [];
+        let streamStartTime;
+        let clipStartTime;
 
         document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -86,6 +137,12 @@
             statusElement.style.display = 'block';
             statusElement.textContent = message;
             statusElement.className = status;
+
+            // Enable/disable media controls based on connection status
+            const connected = (status === 'connected');
+            document.getElementById('startClipButton').disabled = !connected;
+            // endClipButton is handled by startClip/endClip logic
+            document.getElementById('screenshotButton').disabled = !connected;
         }
 
         function updateVideoDebugInfo(message) {
@@ -145,6 +202,11 @@
                         if (message.offer) {
                             updateConnectionStatus('connecting', 'Offer received. Processing...');
                             await handleOffer(message.offer);
+                            // Enable buttons once the stream is likely to be active
+                            if (peerConnection && peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                                document.getElementById('startClipButton').disabled = false;
+                                document.getElementById('screenshotButton').disabled = false;
+                            }
                         } else {
                             console.warn("Offer message received without offer data", message);
                         }
@@ -284,6 +346,13 @@
                     reconnectAttempts = 0;
                     isReconnecting = false;
                 }
+
+                // Enable controls once the track is received and video is playing
+                remoteVideo.oncanplay = () => {
+                    document.getElementById('startClipButton').disabled = false;
+                    document.getElementById('screenshotButton').disabled = false;
+                    updateVideoDebugInfo('Video can play, media controls enabled.');
+                };
             };
 
             peerConnection.onicecandidate = event => {
@@ -417,6 +486,14 @@
             document.getElementById('connectionStatus').style.display = 'block';
             isReconnecting = false;
             reconnectAttempts = 0;
+
+            document.getElementById('startClipButton').disabled = true;
+            document.getElementById('endClipButton').disabled = true;
+            document.getElementById('screenshotButton').disabled = true;
+            document.getElementById('clipStatus').textContent = '';
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                mediaRecorder.stop();
+            }
         }
 
         function checkMediaCompatibility() {
@@ -439,6 +516,153 @@
                 updateVideoDebugInfo("MediaStream API NOT available");
             }
         }
+
+        // FR008 & FR010: Viewer Live Clipping and Media Controls
+        function startClip() {
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (!remoteVideo.srcObject) {
+                alert('Stream not available to start clipping.');
+                updateVideoDebugInfo('Attempted to start clip, but no stream available.');
+                return;
+            }
+
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                alert('Clipping is already in progress.');
+                return;
+            }
+
+            try {
+                const stream = remoteVideo.srcObject;
+                recordedChunks = []; // Reset for new clip
+                mediaRecorder = new MediaRecorder(stream);
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstart = () => {
+                    clipStartTime = new Date();
+                    document.getElementById('startClipButton').disabled = true;
+                    document.getElementById('endClipButton').disabled = false;
+                    document.getElementById('screenshotButton').disabled = true; // Disable screenshot during clipping
+                    document.getElementById('clipStatus').textContent = 'Clipping in progress...';
+                    updateVideoDebugInfo('Clipping started.');
+                    console.log('MediaRecorder started, state:', mediaRecorder.state);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    document.getElementById('startClipButton').disabled = false;
+                    document.getElementById('endClipButton').disabled = true;
+                    document.getElementById('screenshotButton').disabled = false; // Re-enable screenshot
+                    document.getElementById('clipStatus').textContent = 'Clip captured!';
+                    updateVideoDebugInfo('Clipping stopped. Processing data...');
+                    console.log('MediaRecorder stopped, state:', mediaRecorder.state);
+
+                    if (recordedChunks.length === 0) {
+                        console.warn("No data recorded for the clip.");
+                        alert("No data was recorded for the clip. Please try again.");
+                        document.getElementById('clipStatus').textContent = 'Clip capture failed (no data).';
+                        return;
+                    }
+
+                    const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const clipName = `clip_${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
+                    
+                    addMediaToList('clipsList', clipName, url);
+                    recordedChunks = []; // Clear for next recording
+                    
+                    setTimeout(() => {
+                        document.getElementById('clipStatus').textContent = '';
+                    }, 3000);
+                };
+
+                mediaRecorder.onerror = (event) => {
+                    console.error('MediaRecorder error:', event.error);
+                    alert('Error during clipping: ' + event.error.name);
+                    document.getElementById('startClipButton').disabled = false;
+                    document.getElementById('endClipButton').disabled = true;
+                    document.getElementById('screenshotButton').disabled = false;
+                    document.getElementById('clipStatus').textContent = 'Clipping error.';
+                    updateVideoDebugInfo(`MediaRecorder error: ${event.error.name} - ${event.error.message}`);
+                };
+                
+                mediaRecorder.start();
+
+            } catch (e) {
+                console.error('Error starting MediaRecorder:', e);
+                alert('Could not start clipping: ' + e.message);
+                updateVideoDebugInfo(`Error starting MediaRecorder: ${e.message}`);
+                document.getElementById('startClipButton').disabled = false;
+                document.getElementById('endClipButton').disabled = true;
+                document.getElementById('screenshotButton').disabled = false;
+            }
+        }
+
+        function endClip() {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
+            } else {
+                alert('Clipping is not in progress.');
+                updateVideoDebugInfo('Attempted to end clip, but no recording in progress.');
+            }
+        }
+
+        // FR009 & FR010: Viewer Screenshot Capture and Media Controls
+        function takeScreenshot() {
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (!remoteVideo.srcObject || remoteVideo.paused || remoteVideo.ended) {
+                alert('Video stream not active or available for screenshot.');
+                updateVideoDebugInfo('Screenshot attempt failed: Video stream not active.');
+                return;
+            }
+
+            const canvas = document.createElement('canvas');
+            canvas.width = remoteVideo.videoWidth;
+            canvas.height = remoteVideo.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(remoteVideo, 0, 0, canvas.width, canvas.height);
+
+            try {
+                const dataUrl = canvas.toDataURL('image/png');
+                const screenshotName = `screenshot_${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+                
+                addMediaToList('screenshotsList', screenshotName, dataUrl);
+                
+                document.getElementById('clipStatus').textContent = 'Screenshot captured!';
+                updateVideoDebugInfo('Screenshot taken.');
+                setTimeout(() => {
+                    document.getElementById('clipStatus').textContent = '';
+                }, 2000);
+
+            } catch (e) {
+                console.error('Error taking screenshot:', e);
+                alert('Could not take screenshot: ' + e.message);
+                updateVideoDebugInfo(`Error taking screenshot: ${e.message}`);
+                document.getElementById('clipStatus').textContent = 'Screenshot failed.';
+                 setTimeout(() => {
+                    document.getElementById('clipStatus').textContent = '';
+                }, 2000);
+            }
+        }
+
+        function addMediaToList(listId, fileName, dataUrl) {
+            const listContainer = document.getElementById(listId);
+            const list = listContainer.querySelector('ul');
+            listContainer.style.display = 'block';
+
+            const listItem = document.createElement('li');
+            const link = document.createElement('a');
+            link.href = dataUrl;
+            link.download = fileName;
+            link.textContent = fileName;
+            listItem.appendChild(link);
+            list.appendChild(listItem);
+            updateVideoDebugInfo(`Added ${fileName} to download list.`);
+        }
+
     </script>
 </body>
 </html>
