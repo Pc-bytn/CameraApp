@@ -91,21 +91,28 @@ function connectWebSocket(onOpenCallback) {
         switch (message.type) {
             case 'answer':
                 if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
-                    console.log('Remote description (answer) set.');
-                    // Now the viewer is present, send all buffered ICE candidates
-                    answerReceived = true;
-                    if (iceCandidateBuffer.length > 0) {
-                        iceCandidateBuffer.forEach(candidate => {
-                            sendSignalingMessage({
-                                type: 'candidate',
-                                candidate: candidate,
-                                sessionId,
-                                origin: 'initiator'
+                    try {
+                        console.log('Received answer from viewer, setting remote description...');
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+                        console.log('Remote description (answer) set successfully.');
+                        // Now the viewer is present, send all buffered ICE candidates
+                        answerReceived = true;
+                        if (iceCandidateBuffer.length > 0) {
+                            console.log(`Sending ${iceCandidateBuffer.length} buffered ICE candidates after answer.`);
+                            iceCandidateBuffer.forEach(candidate => {
+                                sendSignalingMessage({
+                                    type: 'candidate',
+                                    candidate: candidate,
+                                    sessionId,
+                                    origin: 'initiator'
+                                });
                             });
-                        });
-                        iceCandidateBuffer = [];
-                        console.log('Sent all buffered ICE candidates after answer.');
+                            iceCandidateBuffer = [];
+                            console.log('Sent all buffered ICE candidates after answer.');
+                        }
+                    } catch (error) {
+                        console.error('Error setting remote description:', error);
+                        alert('Error establishing connection with viewer: ' + error.message);
                     }
                 } else {
                     console.warn('Received answer but peerConnection state is not "have-local-offer" or peerConnection is null. Current state:', peerConnection ? peerConnection.signalingState : 'null');
@@ -355,10 +362,24 @@ function setupPeerConnection() {
         }
 
         peerConnection = new RTCPeerConnection(peerConnectionConfig);
+        console.log('Created new RTCPeerConnection');
 
+        if (!localStream) {
+            console.error('Local stream not available when setting up peer connection');
+            alert('Camera stream not available. Please restart the capture.');
+            return;
+        }
+
+        // Log stream details to help with debugging
+        console.log(`Local stream has ${localStream.getTracks().length} tracks`);
         localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-            console.log('Added track to peer connection:', track.kind);
+            console.log(`Adding track to PeerConnection: ${track.kind}, enabled: ${track.enabled}, muted: ${track.muted}`);
+            const sender = peerConnection.addTrack(track, localStream);
+            if (sender) {
+                console.log('Track added successfully to peer connection');
+            } else {
+                console.warn('Failed to add track to peer connection');
+            }
         });
 
         peerConnection.onicecandidate = event => {

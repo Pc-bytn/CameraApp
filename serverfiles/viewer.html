@@ -17,6 +17,12 @@
         .connecting { background-color: #FFF3CD; color: #856404; }
         .connected { background-color: #D4EDDA; color: #155724; }
         .disconnected { background-color: #F8D7DA; color: #721C24; }
+        #videoDebugInfo {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+        }
     </style>
 </head>
 <body>
@@ -27,7 +33,8 @@
         <button onclick="stopViewing()">Stop Viewing</button>
     </div>
     <div id="connectionStatus" style="display: none;"></div>
-    <video id="remoteVideo" autoplay playsinline controls></video>
+    <video id="remoteVideo" autoplay playsinline controls muted></video>
+    <div id="videoDebugInfo" style="display: none;"></div>
     
     <script src="PRIVATE_URL.JS"></script>
     <script>
@@ -43,6 +50,11 @@
         document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
             const sessionIdFromUrl = urlParams.get('sessionId');
+            
+            // Check browser compatibility
+            checkMediaCompatibility();
+            
+            // Auto-join if session ID is in URL
             if (sessionIdFromUrl) {
                 document.getElementById('sessionIdInput').value = sessionIdFromUrl;
                 joinStream();
@@ -72,6 +84,14 @@
             statusElement.style.display = 'block';
             statusElement.textContent = message;
             statusElement.className = status;
+        }
+
+        function updateVideoDebugInfo(message) {
+            const debugElement = document.getElementById('videoDebugInfo');
+            const timestamp = new Date().toLocaleTimeString();
+            debugElement.style.display = 'block';
+            debugElement.innerHTML += `<p>${timestamp}: ${message}</p>`;
+            console.log(`Video Debug: ${message}`);
         }
 
         function sendSignalingMessage(message) {
@@ -209,34 +229,56 @@
             }
             peerConnection = new RTCPeerConnection(peerConnectionConfig);
 
+            // Add debug tracking
+            updateVideoDebugInfo("PeerConnection created, waiting for tracks...");
+
             peerConnection.ontrack = event => {
+                updateVideoDebugInfo(`Track received: ${event.track.kind}`);
                 const remoteVideo = document.getElementById('remoteVideo');
-                remoteVideo.muted = true;
+                
+                // Ensure the video is ready to play
+                remoteVideo.onloadedmetadata = () => {
+                    updateVideoDebugInfo("Video metadata loaded, attempting to play");
+                    remoteVideo.play()
+                        .then(() => updateVideoDebugInfo("Video playback started successfully"))
+                        .catch(e => {
+                            updateVideoDebugInfo(`Error starting video: ${e.message}`);
+                            alert('Error playing video. Try clicking on the video to unmute/play.');
+                        });
+                };
+
+                remoteVideo.onerror = (e) => {
+                    updateVideoDebugInfo(`Video element error: ${e.message || 'Unknown error'}`);
+                };
+
                 if (event.streams && event.streams[0]) {
+                    updateVideoDebugInfo("Using stream from event.streams[0]");
                     remoteVideo.srcObject = event.streams[0];
                     updateConnectionStatus('connected', 'Stream connected successfully!');
                     reconnectAttempts = 0;
                     isReconnecting = false;
-                } else {
-                    if (!remoteVideo.srcObject && event.track) {
-                        let inboundStream = new MediaStream();
-                        inboundStream.addTrack(event.track);
-                        remoteVideo.srcObject = inboundStream;
-                        updateConnectionStatus('connected', 'Stream connected successfully!');
-                        reconnectAttempts = 0;
-                        isReconnecting = false;
+                } else if (event.track) {
+                    updateVideoDebugInfo("No stream available, creating new MediaStream");
+                    if (!remoteVideo.srcObject) {
+                        remoteVideo.srcObject = new MediaStream();
                     }
+                    remoteVideo.srcObject.addTrack(event.track);
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                    reconnectAttempts = 0;
+                    isReconnecting = false;
                 }
             };
 
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
                     sendSignalingMessage({ type: 'candidate', candidate: event.candidate });
+                    updateVideoDebugInfo("ICE candidate sent to initiator");
                 }
             };
 
             peerConnection.oniceconnectionstatechange = () => {
                 console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
+                updateVideoDebugInfo(`ICE connection state: ${peerConnection.iceConnectionState}`);
                 
                 if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
                     updateConnectionStatus('connected', 'Stream connected successfully!');
@@ -256,17 +298,25 @@
                 console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
             };
 
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            console.log('Remote description (offer) set.');
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                console.log('Remote description (offer) set.');
+                updateVideoDebugInfo("Remote description (offer) set successfully");
 
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            console.log('Local description (answer) created.');
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                console.log('Local description (answer) created.');
+                updateVideoDebugInfo("Local description (answer) created successfully");
 
-            const sendSuccess = sendSignalingMessage({ type: 'answer', answer: answer });
-            if (!sendSuccess) {
-                updateConnectionStatus('disconnected', 'Failed to send answer. Please try again.');
-                throw new Error('Failed to send answer via WebSocket.');
+                const sendSuccess = sendSignalingMessage({ type: 'answer', answer: answer });
+                if (!sendSuccess) {
+                    updateConnectionStatus('disconnected', 'Failed to send answer. Please try again.');
+                    throw new Error('Failed to send answer via WebSocket.');
+                }
+            } catch (error) {
+                updateVideoDebugInfo(`Error in offer/answer process: ${error.message}`);
+                console.error("WebRTC error:", error);
+                updateConnectionStatus('disconnected', `WebRTC Error: ${error.message}`);
             }
         }
 
@@ -321,6 +371,27 @@
             document.getElementById('connectionStatus').style.display = 'block';
             isReconnecting = false;
             reconnectAttempts = 0;
+        }
+
+        function checkMediaCompatibility() {
+            updateVideoDebugInfo(`Browser: ${navigator.userAgent}`);
+            if (navigator.mediaDevices) {
+                updateVideoDebugInfo("mediaDevices API available");
+            } else {
+                updateVideoDebugInfo("mediaDevices API NOT available");
+            }
+            
+            if (window.RTCPeerConnection) {
+                updateVideoDebugInfo("RTCPeerConnection API available");
+            } else {
+                updateVideoDebugInfo("RTCPeerConnection API NOT available");
+            }
+            
+            if (window.MediaStream) {
+                updateVideoDebugInfo("MediaStream API available");
+            } else {
+                updateVideoDebugInfo("MediaStream API NOT available");
+            }
         }
     </script>
 </body>
