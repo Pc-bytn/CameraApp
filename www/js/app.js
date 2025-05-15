@@ -135,6 +135,19 @@ function connectWebSocket(onOpenCallback) {
             case 'pong':
                 console.log('Received pong from server (initiator) - connection alive');
                 break;
+            case 'request_ice_restart':
+                console.log('Received ICE restart request from viewer');
+                if (peerConnection) {
+                    alert('Attempting to reconnect to viewer...');
+                    // Recreate the offer with iceRestart flag to force new ICE candidates
+                    isReconnecting = true;
+                    createAndSendOffer();
+                }
+                break;
+            case 'recovery_timeout':
+                console.log('Recovery timeout notification from viewer');
+                alert('Reconnection attempt timed out. Stream may be unreliable.');
+                break;
             case 'hangup':
                 console.log('Received hangup from viewer/server (initiator)');
                 stopWebRTCStream(false);
@@ -440,15 +453,41 @@ async function handleConnectionFailure() {
         alert(`Connection lost. Attempting to reconnect... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
 
         try {
-            if (peerConnection) {
-                peerConnection.close();
-                peerConnection = null;
+            if (peerConnection && peerConnection.signalingState !== 'closed') {
+                // Use ICE restart instead of recreating the connection if possible
+                console.log('Attempting ICE restart');
+                createAndSendOffer();
+                
+                // Set a timeout for this reconnection attempt
+                setTimeout(() => {
+                    if (isReconnecting && peerConnection && 
+                        (peerConnection.iceConnectionState === 'disconnected' || 
+                         peerConnection.iceConnectionState === 'failed')) {
+                        console.log(`Reconnection attempt ${reconnectAttempts} timed out`);
+                        
+                        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                            alert('Failed to reconnect after multiple attempts.');
+                            stopWebRTCStream();
+                        } else {
+                            // Try a more aggressive approach with a new peer connection
+                            if (peerConnection) {
+                                peerConnection.close();
+                                peerConnection = null;
+                            }
+                            setupPeerConnection();
+                        }
+                    }
+                }, 10000); // 10 second timeout for reconnection attempt
+            } else {
+                // PeerConnection is already closed, create a new one
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+                setupPeerConnection();
             }
-
-            setupPeerConnection();
         } catch (e) {
             console.error('Reconnection attempt failed:', e);
-
             setTimeout(() => {
                 isReconnecting = false;
                 if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -471,11 +510,19 @@ async function createAndSendOffer() {
             console.error("Cannot create offer: PeerConnection does not exist.");
             return;
         }
-        const offer = await peerConnection.createOffer({
+        
+        console.log(`Creating offer with iceRestart: ${isReconnecting}`);
+        const offerOptions = {
             offerToReceiveAudio: true,
-            offerToReceiveVideo: true,
-            iceRestart: isReconnecting
-        });
+            offerToReceiveVideo: true
+        };
+        
+        // Add iceRestart flag when reconnecting to force new ICE candidates
+        if (isReconnecting) {
+            offerOptions.iceRestart = true;
+        }
+        
+        const offer = await peerConnection.createOffer(offerOptions);
         await peerConnection.setLocalDescription(offer);
 
         if (!sessionId) {
@@ -488,7 +535,16 @@ async function createAndSendOffer() {
         if (!success) {
             alert('Failed to send offer. WebSocket not ready or error occurred.');
         } else {
-            isReconnecting = false;
+            // Reset reconnecting flag only after a successful reconnection
+            if (peerConnection.iceConnectionState === 'connected' || 
+                peerConnection.iceConnectionState === 'completed') {
+                isReconnecting = false;
+            }
+            
+            // Send notification to viewer that we're attempting recovery
+            if (isReconnecting) {
+                sendSignalingMessage({ type: 'recovery_attempt' });
+            }
         }
     } catch (error) {
         console.error('Error creating or sending offer:', error);

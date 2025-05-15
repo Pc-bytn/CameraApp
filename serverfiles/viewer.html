@@ -46,6 +46,8 @@
         let isReconnecting = false;
         let websocket;
         let keepAliveIntervalId;
+        let reconnectTimeoutId = null;
+        const RECONNECT_TIMEOUT = 15000; // 15 seconds timeout for reconnection attempts
 
         document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -159,6 +161,21 @@
                             } else {
                                 console.warn('Received ICE candidate (viewer) but remote description not set yet.');
                             }
+                        }
+                        break;
+                    case 'recovery_attempt':
+                        updateConnectionStatus('connecting', 'Initiator is attempting to recover connection...');
+                        
+                        // Reset timeout since initiator is actively working on it
+                        if (reconnectTimeoutId) {
+                            clearTimeout(reconnectTimeoutId);
+                            reconnectTimeoutId = setTimeout(() => {
+                                if (isReconnecting && peerConnection && 
+                                    (peerConnection.iceConnectionState !== 'connected' && 
+                                     peerConnection.iceConnectionState !== 'completed')) {
+                                    updateConnectionStatus('disconnected', 'Recovery attempt timed out.');
+                                }
+                            }, RECONNECT_TIMEOUT);
                         }
                         break;
                     case 'hangup':
@@ -320,7 +337,7 @@
             }
         }
 
-        async function handleConnectionFailure() {
+        function handleConnectionFailure() {
             if (isReconnecting) return;
             
             isReconnecting = true;
@@ -328,13 +345,42 @@
             
             if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
                 updateConnectionStatus('connecting', `WebRTC connection failed. Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                
+                // Clear any existing timeout
+                if (reconnectTimeoutId) {
+                    clearTimeout(reconnectTimeoutId);
+                }
+                
+                // Request ICE restart from initiator
                 sendSignalingMessage({ type: 'request_ice_restart' });
-                console.log("WebRTC connection failed. Viewer is waiting for new offer for ICE restart.");
-                setTimeout(() => {
-                    if (isReconnecting && peerConnection && peerConnection.iceConnectionState !== 'connected' && peerConnection.iceConnectionState !== 'completed') {
-                        updateConnectionStatus('disconnected', `Reconnect attempt ${reconnectAttempts} timed out. Still disconnected.`);
+                console.log("WebRTC connection failed. Viewer is requesting ICE restart.");
+                
+                // Set timeout for this reconnection attempt
+                reconnectTimeoutId = setTimeout(() => {
+                    if (isReconnecting && peerConnection && 
+                        (peerConnection.iceConnectionState !== 'connected' && 
+                         peerConnection.iceConnectionState !== 'completed')) {
+                        
+                        updateConnectionStatus('disconnected', `Reconnect attempt ${reconnectAttempts} timed out.`);
+                        sendSignalingMessage({ type: 'recovery_timeout' });
+                        
+                        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                            updateConnectionStatus('disconnected', 'Failed to reconnect after multiple attempts.');
+                            stopViewing(false);
+                        } else {
+                            // Try again with a new connection
+                            if (peerConnection) {
+                                peerConnection.close();
+                                peerConnection = null;
+                            }
+                            // Wait briefly before attempting again
+                            setTimeout(() => {
+                                isReconnecting = false;
+                                handleConnectionFailure();
+                            }, 2000);
+                        }
                     }
-                }, 15000);
+                }, RECONNECT_TIMEOUT);
             } else {
                 updateConnectionStatus('disconnected', 'Failed to reconnect WebRTC stream after multiple attempts.');
                 console.error('Failed to reconnect WebRTC stream.');
