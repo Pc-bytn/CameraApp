@@ -45,6 +45,7 @@ function sendSignalingMessage(message) {
     }
 }
 
+// --- Ensure WebSocket is open before sending offer ---
 function connectWebSocket(onOpenCallback) {
     if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
         console.log('WebSocket already connected or connecting.');
@@ -72,6 +73,7 @@ function connectWebSocket(onOpenCallback) {
             }
         }, 25000);
 
+        // Only call onOpenCallback after WebSocket is fully open
         if (typeof onOpenCallback === 'function') {
             onOpenCallback();
         }
@@ -145,6 +147,7 @@ function updateCaptureButtonState(isStreaming) {
     }
 }
 
+// --- Only allow offer sending after WebSocket is open ---
 async function startWebRTCStream() {
     if (peerConnection && peerConnection.iceConnectionState !== 'closed' && peerConnection.iceConnectionState !== 'failed') {
         alert('A stream is already active or attempting to connect.');
@@ -167,8 +170,14 @@ async function startWebRTCStream() {
             console.log('Generated new Session ID:', sessionId);
         }
 
+        // Only setup peer connection after WebSocket is open
         connectWebSocket(() => {
-            setupPeerConnection();
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                setupPeerConnection();
+            } else {
+                alert('WebSocket not ready. Please try again.');
+                updateCaptureButtonState(false);
+            }
         });
 
     } catch (e) {
@@ -458,9 +467,16 @@ async function shareSessionLink() {
             await navigator.share({ title: 'Stream Link', text: 'Join my stream:', url: viewerPageUrl });
             console.log('Stream link shared successfully.');
         } else if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(viewerPageUrl);
-            alert('Stream link copied to clipboard!');
-            console.log('Link copied to clipboard');
+            try {
+                await navigator.clipboard.writeText(viewerPageUrl);
+                alert('Stream link copied to clipboard!');
+                console.log('Link copied to clipboard');
+            } catch (clipboardError) {
+                // Fallback to prompt if clipboard fails (e.g., permission denied)
+                prompt('Copy this link to share the stream:', viewerPageUrl);
+                alert('Clipboard write failed. Please copy the link manually.');
+                console.warn('Clipboard write error:', clipboardError);
+            }
         } else {
             prompt('Please copy this link to share the stream:', viewerPageUrl);
         }
