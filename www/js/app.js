@@ -45,9 +45,12 @@ function sendSignalingMessage(message) {
     }
 }
 
-function connectWebSocket() {
+function connectWebSocket(onOpenCallback) {
     if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
         console.log('WebSocket already connected or connecting.');
+        if (websocket.readyState === WebSocket.OPEN && typeof onOpenCallback === 'function') {
+            onOpenCallback();
+        }
         return;
     }
 
@@ -68,6 +71,10 @@ function connectWebSocket() {
                 console.log('Sending ping (initiator)');
             }
         }, 25000);
+
+        if (typeof onOpenCallback === 'function') {
+            onOpenCallback();
+        }
     };
 
     websocket.onmessage = async (event) => {
@@ -160,8 +167,9 @@ async function startWebRTCStream() {
             console.log('Generated new Session ID:', sessionId);
         }
 
-        connectWebSocket();
-        setupPeerConnection();
+        connectWebSocket(() => {
+            setupPeerConnection();
+        });
 
     } catch (e) {
         alert('Error starting WebRTC stream: ' + e.message);
@@ -442,7 +450,7 @@ async function shareSessionLink() {
 
     try {
         const wsUrlObj = new URL(webSocketSignalingUrl);
-        const viewerPageUrl = `${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//${wsUrlObj.host}?sessionId=${sessionId}`;
+        const viewerPageUrl = `${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//PRIVATE_WEB_URL/sys/viewer.html?sessionId=${sessionId}`;
 
         alert(`Share this link with the viewer: ${viewerPageUrl}`);
 
