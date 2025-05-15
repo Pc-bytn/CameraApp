@@ -8,6 +8,8 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 let isReconnecting = false;
 let keepAliveIntervalId;
 let websocket; // WebSocket connection
+let iceCandidateBuffer = [];
+let answerReceived = false;
 
 const peerConnectionConfig = {
     iceServers: [
@@ -91,6 +93,20 @@ function connectWebSocket(onOpenCallback) {
                 if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
                     console.log('Remote description (answer) set.');
+                    // Now the viewer is present, send all buffered ICE candidates
+                    answerReceived = true;
+                    if (iceCandidateBuffer.length > 0) {
+                        iceCandidateBuffer.forEach(candidate => {
+                            sendSignalingMessage({
+                                type: 'candidate',
+                                candidate: candidate,
+                                sessionId,
+                                origin: 'initiator'
+                            });
+                        });
+                        iceCandidateBuffer = [];
+                        console.log('Sent all buffered ICE candidates after answer.');
+                    }
                 } else {
                     console.warn('Received answer but peerConnection state is not "have-local-offer" or peerConnection is null. Current state:', peerConnection ? peerConnection.signalingState : 'null');
                 }
@@ -347,12 +363,18 @@ function setupPeerConnection() {
 
         peerConnection.onicecandidate = event => {
             if (event.candidate) {
-                sendSignalingMessage({
-                    type: 'candidate',
-                    candidate: event.candidate,
-                    sessionId,
-                    origin: 'initiator'
-                });
+                if (!answerReceived) {
+                    // Buffer ICE candidates until answer is received
+                    iceCandidateBuffer.push(event.candidate);
+                    console.log('Buffered ICE candidate (waiting for viewer/answer)');
+                } else {
+                    sendSignalingMessage({
+                        type: 'candidate',
+                        candidate: event.candidate,
+                        sessionId,
+                        origin: 'initiator'
+                    });
+                }
             }
         };
 
@@ -376,6 +398,9 @@ function setupPeerConnection() {
             console.log(`Signaling state: ${peerConnection.signalingState}`);
         };
 
+        // Reset buffer and flag
+        iceCandidateBuffer = [];
+        answerReceived = false;
         createAndSendOffer();
     } catch (error) {
         console.error('Error setting up peer connection:', error);
