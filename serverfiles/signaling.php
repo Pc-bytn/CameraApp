@@ -217,7 +217,8 @@ $server = IoServer::factory(
             new SignalingServer()
         )
     ),
-    $port
+    $port,
+    '0.0.0.0'
 );
 
 echo "Starting WebSocket server on port {$port}...\n";

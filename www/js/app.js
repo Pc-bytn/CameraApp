@@ -442,7 +442,7 @@ async function shareSessionLink() {
 
     try {
         const wsUrlObj = new URL(webSocketSignalingUrl);
-        const viewerPageUrl = `${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//${wsUrlObj.host}/serverfiles/viewer.html?sessionId=${sessionId}`;
+        const viewerPageUrl = `${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//${wsUrlObj.host}?sessionId=${sessionId}`;
 
         alert(`Share this link with the viewer: ${viewerPageUrl}`);
 
