@@ -8,6 +8,21 @@
         body { font-family: sans-serif; margin: 20px; }
         video { border: 1px solid black; max-width: 100%; background-color: #333; }
         input, button { padding: 10px; margin: 5px; font-size: 1em; }
+        #connectionStatus {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .connecting { background-color: #FFF3CD; color: #856404; }
+        .connected { background-color: #D4EDDA; color: #155724; }
+        .disconnected { background-color: #F8D7DA; color: #721C24; }
+        #videoDebugInfo {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+        }
     </style>
 </head>
 <body>
@@ -17,88 +32,185 @@
         <button onclick="joinStream()">Join Stream</button>
         <button onclick="stopViewing()">Stop Viewing</button>
     </div>
-    <video id="remoteVideo" autoplay playsinline controls></video>
+    <div id="connectionStatus" style="display: none;"></div>
+    <video id="remoteVideo" autoplay playsinline controls muted></video>
+    <div id="videoDebugInfo" style="display: none;"></div>
     
     <script src="PRIVATE_URL.JS"></script>
     <script>
         let peerConnection;
-        const signalingServerUrl = window.SIGNALING_SERVER_URL; // IMPORTANT: Replace with your actual PHP server URL
+        const webSocketSignalingUrl = window.WEBSOCKET_SIGNALING_URL;
         let currentSessionId;
-        let signalingPollIntervalId;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 3;
+        let isReconnecting = false;
+        let websocket;
+        let keepAliveIntervalId;
+        let reconnectTimeoutId = null;
+        const RECONNECT_TIMEOUT = 15000; // 15 seconds timeout for reconnection attempts
 
-        // Check for sessionId in URL parameters
         document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
             const sessionIdFromUrl = urlParams.get('sessionId');
+            
+            // Check browser compatibility
+            checkMediaCompatibility();
+            
+            // Auto-join if session ID is in URL
             if (sessionIdFromUrl) {
                 document.getElementById('sessionIdInput').value = sessionIdFromUrl;
-                // Optionally auto-join the stream if a sessionId is provided
-                // joinStream();
+                joinStream();
             }
         });
 
         const peerConnectionConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
+                { urls: 'stun:stun1.l.google.com:19302' },
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
+            ],
+            iceCandidatePoolSize: 10
         };
 
-        async function sendSignalingMessage(message) {
-            try {
-                // When viewer sends, it's for the initiator
-                const response = await fetch(`${signalingServerUrl}?action=send&sessionId=${message.sessionId}`, { // Pass sessionId in query
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(message),
-                });
-                if (!response.ok) {
-                    throw new Error(`Signaling server error: ${response.status} ${await response.text()}`);
-                }
-                console.log('Signaling message sent (viewer):', message.type);
-            } catch (e) {
-                alert(`Error sending signaling message (${message.type}): ${e.message}`);
-                console.error('Send signaling error (viewer):', e);
+        function updateConnectionStatus(status, message) {
+            const statusElement = document.getElementById('connectionStatus');
+            statusElement.style.display = 'block';
+            statusElement.textContent = message;
+            statusElement.className = status;
+        }
+
+        function updateVideoDebugInfo(message) {
+            const debugElement = document.getElementById('videoDebugInfo');
+            const timestamp = new Date().toLocaleTimeString();
+            debugElement.style.display = 'block';
+            debugElement.innerHTML += `<p>${timestamp}: ${message}</p>`;
+            console.log(`Video Debug: ${message}`);
+        }
+
+        function sendSignalingMessage(message) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                message.sessionId = currentSessionId;
+                message.origin = 'viewer';
+                websocket.send(JSON.stringify(message));
+                console.log('Signaling message sent via WebSocket (viewer):', message.type);
+                return true;
+            } else {
+                console.error('WebSocket not connected, cannot send message (viewer):', message.type);
+                updateConnectionStatus('disconnected', 'WebSocket not connected. Cannot send message.');
+                return false;
             }
         }
 
-        async function listenForSignalingMessages(sessionId) {
-            signalingPollIntervalId = setInterval(async () => {
-                if (!peerConnection || peerConnection.signalingState === 'closed' || peerConnection.iceConnectionState === 'closed') {
-                    clearInterval(signalingPollIntervalId);
-                    return;
-                }
-                try {
-                    // 'viewer' tells the server we are the one viewing the stream
-                    const response = await fetch(`${signalingServerUrl}?action=receive&sessionId=${sessionId}&peer=viewer`);
-                    if (response.ok) {
-                        const message = await response.json();
-                        if (message) {
-                            console.log('Received signaling message (viewer):', message);
-                            if (message.type === 'offer') { // Should have already received this to initiate joinStream
-                                console.warn("Received offer again, already processed or should be initial fetch.");
-                            } else if (message.type === 'candidate' && message.candidate) {
-                                if (peerConnection.remoteDescription) { // Ensure offer (remote desc) is set
-                                    try {
-                                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-                                        console.log('Added remote ICE candidate (from initiator).');
-                                    } catch (e) {
-                                        console.error('Error adding received ICE candidate (viewer):', e);
-                                    }
-                                } else {
-                                     console.warn('Received ICE candidate but remote description (offer) not set yet.');
+        function connectWebSocketAndJoin() {
+            if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
+                console.log('WebSocket already connected or connecting.');
+                return;
+            }
+
+            websocket = new WebSocket(webSocketSignalingUrl);
+
+            websocket.onopen = () => {
+                console.log('WebSocket connection established (viewer).');
+                updateConnectionStatus('connecting', 'WebSocket connected. Registering session...');
+                websocket.send(JSON.stringify({
+                    type: 'register',
+                    sessionId: currentSessionId,
+                    peerType: 'viewer'
+                }));
+
+                if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+                keepAliveIntervalId = setInterval(() => {
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        sendSignalingMessage({ type: 'ping' });
+                        console.log('Sending ping (viewer)');
+                    }
+                }, 25000);
+            };
+
+            websocket.onmessage = async (event) => {
+                const message = JSON.parse(event.data);
+                console.log('Received WebSocket message (viewer):', message);
+
+                switch (message.type) {
+                    case 'offer':
+                        if (message.offer) {
+                            updateConnectionStatus('connecting', 'Offer received. Processing...');
+                            await handleOffer(message.offer);
+                        } else {
+                            console.warn("Offer message received without offer data", message);
+                        }
+                        break;
+                    case 'candidate':
+                        if (peerConnection && message.candidate) {
+                            if (peerConnection.remoteDescription) {
+                                try {
+                                    await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                                    console.log('Added remote ICE candidate (viewer).');
+                                } catch (e) {
+                                    console.error('Error adding received ICE candidate (viewer):', e);
                                 }
+                            } else {
+                                console.warn('Received ICE candidate (viewer) but remote description not set yet.');
                             }
                         }
-                    } else if (response.status !== 404) {
-                         console.error('Error fetching signaling messages (viewer):', response.status, await response.text());
-                    }
-                } catch (e) {
-                    // console.warn('Polling error (viewer - can be normal if no messages):', e.message);
+                        break;
+                    case 'recovery_attempt':
+                        updateConnectionStatus('connecting', 'Initiator is attempting to recover connection...');
+                        
+                        // Reset timeout since initiator is actively working on it
+                        if (reconnectTimeoutId) {
+                            clearTimeout(reconnectTimeoutId);
+                            reconnectTimeoutId = setTimeout(() => {
+                                if (isReconnecting && peerConnection && 
+                                    (peerConnection.iceConnectionState !== 'connected' && 
+                                     peerConnection.iceConnectionState !== 'completed')) {
+                                    updateConnectionStatus('disconnected', 'Recovery attempt timed out.');
+                                }
+                            }, RECONNECT_TIMEOUT);
+                        }
+                        break;
+                    case 'hangup':
+                        console.log('Received hangup from initiator/server (viewer)');
+                        updateConnectionStatus('disconnected', 'Stream ended by initiator.');
+                        stopViewing(false);
+                        break;
+                    case 'pong':
+                        console.log('Received pong from server (viewer) - connection alive');
+                        break;
+                    case 'error':
+                        updateConnectionStatus('disconnected', `Server error: ${message.message}`);
+                        console.error('Server error message:', message.message);
+                        stopViewing(false);
+                        break;
+                    case 'session_not_found':
+                        updateConnectionStatus('disconnected', `Session ID ${currentSessionId} not found or initiator not connected.`);
+                        console.warn(`Session ${currentSessionId} not found or initiator not connected.`);
+                        stopViewing(false);
+                        break;
                 }
-            }, 3000);
+            };
+
+            websocket.onerror = (error) => {
+                console.error('WebSocket error (viewer):', error);
+                updateConnectionStatus('disconnected', 'WebSocket connection error. Please try again.');
+                stopViewing(false);
+            };
+
+            websocket.onclose = (event) => {
+                console.log('WebSocket connection closed (viewer):', event.reason, `Code: ${event.code}`);
+                if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+                if (peerConnection && peerConnection.iceConnectionState !== 'closed') {
+                }
+            };
         }
 
         async function joinStream() {
@@ -112,102 +224,221 @@
                 return;
             }
 
-            alert(`Attempting to join stream: ${currentSessionId}`);
-            try {
-                // 1. Fetch the offer from the signaling server
-                const offerResponse = await fetch(`${signalingServerUrl}?action=receive&sessionId=${currentSessionId}&peer=viewer`);
-                if (!offerResponse.ok) {
-                     const errorText = await offerResponse.text();
-                    throw new Error(`Failed to fetch offer. Status: ${offerResponse.status}. ${errorText}`);
-                }
-                const message = await offerResponse.json();
-
-                if (!message || message.type !== 'offer') {
-                    alert('No offer found for this session ID, or invalid message type. Ensure the app has started streaming.');
-                    console.log('Received message:', message);
-                    return;
-                }
-
-                // 2. Create RTCPeerConnection
-                peerConnection = new RTCPeerConnection(peerConnectionConfig);
-
-                // 3. Handle incoming tracks from the Cordova app
-                peerConnection.ontrack = event => {
-                    const remoteVideo = document.getElementById('remoteVideo');
-                    if (event.streams && event.streams[0]) {
-                        remoteVideo.srcObject = event.streams[0];
-                        console.log('Remote stream added to video element.');
-                    } else {
-                        // Fallback for older browsers
-                        if (!remoteVideo.srcObject && event.track) {
-                            let inboundStream = new MediaStream();
-                            inboundStream.addTrack(event.track);
-                            remoteVideo.srcObject = inboundStream;
-                             console.log('Remote track added to video element (fallback).');
-                        }
-                    }
-                };
-
-                // 4. Handle ICE candidates
-                peerConnection.onicecandidate = event => {
-                    if (event.candidate) {
-                        sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId: currentSessionId });
-                    }
-                };
-
-                peerConnection.oniceconnectionstatechange = () => {
-                    console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
-                     if (peerConnection.iceConnectionState === 'failed') {
-                        alert('Stream connection failed (viewer).');
-                        stopViewing();
-                    } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
-                        alert('Stream disconnected or closed (viewer).');
-                        stopViewing();
-                    }
-                };
-                 peerConnection.onsignalingstatechange = () => {
-                    console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
-                };
-
-
-                // 5. Set the received offer as the remote description
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
-                console.log('Remote description (offer) set.');
-
-                // 6. Create an SDP answer
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                console.log('Local description (answer) created.');
-
-                // 7. Send the answer to the signaling server (for the Cordova app)
-                sendSignalingMessage({ type: 'answer', answer: answer, sessionId: currentSessionId });
-
-                // 8. Start listening for candidates from the Cordova app
-                listenForSignalingMessages(currentSessionId);
-
-            } catch (e) {
-                alert('Error joining stream: ' + e.message);
-                console.error('Join Stream Error:', e);
-                stopViewing();
-            }
-        }
-
-        function stopViewing() {
-            if (signalingPollIntervalId) {
-                clearInterval(signalingPollIntervalId);
-                signalingPollIntervalId = null;
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.onclose = null;
+                websocket.close();
             }
             if (peerConnection) {
                 peerConnection.close();
                 peerConnection = null;
             }
-            const remoteVideo = document.getElementById('remoteVideo');
-            if (remoteVideo) remoteVideo.srcObject = null;
-            currentSessionId = null;
-            alert('Viewing stopped.');
-            // You might want to send a 'hangup' message to the signaling server
+
+            updateConnectionStatus('connecting', 'Attempting to join stream via WebSocket...');
+            reconnectAttempts = 0;
+            isReconnecting = false;
+            
+            connectWebSocketAndJoin();
         }
 
+        async function handleOffer(offer) {
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            peerConnection = new RTCPeerConnection(peerConnectionConfig);
+
+            // Add debug tracking
+            updateVideoDebugInfo("PeerConnection created, waiting for tracks...");
+
+            peerConnection.ontrack = event => {
+                updateVideoDebugInfo(`Track received: ${event.track.kind}`);
+                const remoteVideo = document.getElementById('remoteVideo');
+                
+                // Ensure the video is ready to play
+                remoteVideo.onloadedmetadata = () => {
+                    updateVideoDebugInfo("Video metadata loaded, attempting to play");
+                    remoteVideo.play()
+                        .then(() => updateVideoDebugInfo("Video playback started successfully"))
+                        .catch(e => {
+                            updateVideoDebugInfo(`Error starting video: ${e.message}`);
+                            alert('Error playing video. Try clicking on the video to unmute/play.');
+                        });
+                };
+
+                remoteVideo.onerror = (e) => {
+                    updateVideoDebugInfo(`Video element error: ${e.message || 'Unknown error'}`);
+                };
+
+                if (event.streams && event.streams[0]) {
+                    updateVideoDebugInfo("Using stream from event.streams[0]");
+                    remoteVideo.srcObject = event.streams[0];
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                    reconnectAttempts = 0;
+                    isReconnecting = false;
+                } else if (event.track) {
+                    updateVideoDebugInfo("No stream available, creating new MediaStream");
+                    if (!remoteVideo.srcObject) {
+                        remoteVideo.srcObject = new MediaStream();
+                    }
+                    remoteVideo.srcObject.addTrack(event.track);
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                    reconnectAttempts = 0;
+                    isReconnecting = false;
+                }
+            };
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    sendSignalingMessage({ type: 'candidate', candidate: event.candidate });
+                    updateVideoDebugInfo("ICE candidate sent to initiator");
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
+                updateVideoDebugInfo(`ICE connection state: ${peerConnection.iceConnectionState}`);
+                
+                if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                    updateConnectionStatus('connected', 'Stream connected successfully!');
+                    reconnectAttempts = 0;
+                    isReconnecting = false;
+                } else if (peerConnection.iceConnectionState === 'failed') {
+                    updateConnectionStatus('disconnected', 'Stream connection failed.');
+                    handleConnectionFailure();
+                } else if (peerConnection.iceConnectionState === 'disconnected') {
+                    updateConnectionStatus('connecting', 'Stream temporarily disconnected. Attempting to recover...');
+                } else if (peerConnection.iceConnectionState === 'closed') {
+                    updateConnectionStatus('disconnected', 'Stream closed.');
+                }
+            };
+
+            peerConnection.onsignalingstatechange = () => {
+                console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
+            };
+
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                console.log('Remote description (offer) set.');
+                updateVideoDebugInfo("Remote description (offer) set successfully");
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                console.log('Local description (answer) created.');
+                updateVideoDebugInfo("Local description (answer) created successfully");
+
+                const sendSuccess = sendSignalingMessage({ type: 'answer', answer: answer });
+                if (!sendSuccess) {
+                    updateConnectionStatus('disconnected', 'Failed to send answer. Please try again.');
+                    throw new Error('Failed to send answer via WebSocket.');
+                }
+            } catch (error) {
+                updateVideoDebugInfo(`Error in offer/answer process: ${error.message}`);
+                console.error("WebRTC error:", error);
+                updateConnectionStatus('disconnected', `WebRTC Error: ${error.message}`);
+            }
+        }
+
+        function handleConnectionFailure() {
+            if (isReconnecting) return;
+            
+            isReconnecting = true;
+            reconnectAttempts++;
+            
+            if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                updateConnectionStatus('connecting', `WebRTC connection failed. Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                
+                // Clear any existing timeout
+                if (reconnectTimeoutId) {
+                    clearTimeout(reconnectTimeoutId);
+                }
+                
+                // Request ICE restart from initiator
+                sendSignalingMessage({ type: 'request_ice_restart' });
+                console.log("WebRTC connection failed. Viewer is requesting ICE restart.");
+                
+                // Set timeout for this reconnection attempt
+                reconnectTimeoutId = setTimeout(() => {
+                    if (isReconnecting && peerConnection && 
+                        (peerConnection.iceConnectionState !== 'connected' && 
+                         peerConnection.iceConnectionState !== 'completed')) {
+                        
+                        updateConnectionStatus('disconnected', `Reconnect attempt ${reconnectAttempts} timed out.`);
+                        sendSignalingMessage({ type: 'recovery_timeout' });
+                        
+                        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                            updateConnectionStatus('disconnected', 'Failed to reconnect after multiple attempts.');
+                            stopViewing(false);
+                        } else {
+                            // Try again with a new connection
+                            if (peerConnection) {
+                                peerConnection.close();
+                                peerConnection = null;
+                            }
+                            // Wait briefly before attempting again
+                            setTimeout(() => {
+                                isReconnecting = false;
+                                handleConnectionFailure();
+                            }, 2000);
+                        }
+                    }
+                }, RECONNECT_TIMEOUT);
+            } else {
+                updateConnectionStatus('disconnected', 'Failed to reconnect WebRTC stream after multiple attempts.');
+                console.error('Failed to reconnect WebRTC stream.');
+                stopViewing(false);
+            }
+        }
+
+        function stopViewing(notifyServer = true) {
+            if (keepAliveIntervalId) {
+                clearInterval(keepAliveIntervalId);
+                keepAliveIntervalId = null;
+            }
+
+            if (notifyServer && websocket && websocket.readyState === WebSocket.OPEN) {
+                sendSignalingMessage({ type: 'hangup' });
+                console.log('Sent hangup message via WebSocket (viewer).');
+            }
+
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (websocket) {
+                if (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING) {
+                    websocket.onclose = null; 
+                    websocket.close();
+                }
+                websocket = null;
+            }
+
+            const remoteVideo = document.getElementById('remoteVideo');
+            if (remoteVideo) remoteVideo.srcObject = null;
+            updateConnectionStatus('disconnected', 'Viewing stopped.');
+            document.getElementById('connectionStatus').style.display = 'block';
+            isReconnecting = false;
+            reconnectAttempts = 0;
+        }
+
+        function checkMediaCompatibility() {
+            updateVideoDebugInfo(`Browser: ${navigator.userAgent}`);
+            if (navigator.mediaDevices) {
+                updateVideoDebugInfo("mediaDevices API available");
+            } else {
+                updateVideoDebugInfo("mediaDevices API NOT available");
+            }
+            
+            if (window.RTCPeerConnection) {
+                updateVideoDebugInfo("RTCPeerConnection API available");
+            } else {
+                updateVideoDebugInfo("RTCPeerConnection API NOT available");
+            }
+            
+            if (window.MediaStream) {
+                updateVideoDebugInfo("MediaStream API available");
+            } else {
+                updateVideoDebugInfo("MediaStream API NOT available");
+            }
+        }
     </script>
 </body>
 </html>
