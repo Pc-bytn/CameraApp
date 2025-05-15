@@ -43,13 +43,105 @@
         }
         #clipsList li, #screenshotsList li {
             margin-bottom: 5px;
+            display: flex; /* Align items in a row */
+            align-items: center; /* Vertically center items */
         }
-        #clipsList a, #screenshotsList a {
+        #clipsList li > *, #screenshotsList li > * {
+            margin-right: 10px; /* Add some space between elements */
+        }
+        .media-item-actions button {
+            padding: 3px 8px;
+            font-size: 0.8em;
+            margin-left: 5px;
+        }
+        .media-item-actions input[type="text"] {
+            padding: 3px;
+            font-size: 0.8em;
+            width: 100px; /* Adjust as needed */
+        }
+        /* Suggested CSS for viewer.html media item controls */
+        #clipsList ul, #screenshotsList ul {
+            list-style-type: none;
+            padding: 0;
+        }
+        #clipsList li, #screenshotsList li {
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            display: flex; /* Align info and actions */
+            justify-content: space-between; /* Space them out */
+            align-items: center; /* Vertically align */
+        }
+        .media-item-info {
+            flex-grow: 1; /* Allow info to take available space */
+            margin-right: 10px; /* Add some space before actions */
+        }
+        .media-item-info a {
+            color: #007bff;
             text-decoration: none;
+            word-break: break-all; /* Prevent long names from breaking layout */
+        }
+        .media-item-info a:hover {
+            text-decoration: underline;
+        }
+        .media-item-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px; /* Space between action elements */
+            flex-shrink: 0; /* Prevent actions from shrinking too much */
+        }
+        .media-item-actions .rename-input {
+            padding: 6px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            width: 150px; /* Adjust as needed */
+        }
+        .media-item-actions button {
+            padding: 6px 10px;
+            border: 1px solid #ccc;
+            background-color: #e7e7e7;
+            border-radius: 3px;
+            cursor: pointer;
+            white-space: nowrap; /* Prevent button text from wrapping */
+        }
+        .media-item-actions button:hover {
+            background-color: #d7d7d7;
+        }
+        .media-item-actions button:disabled {
+            background-color: #f0f0f0;
+            color: #aaa;
+            cursor: not-allowed;
+        }
+        .media-item-status {
+            font-size: 0.9em;
+            min-width: 100px; /* Give status some space */
+            text-align: left;
+        }
+        .media-item-status.uploading {
             color: #007bff;
         }
-        #clipsList a:hover, #screenshotsList a:hover {
-            text-decoration: underline;
+        .media-item-status.uploaded {
+            color: green;
+        }
+        .media-item-status.failed {
+            color: red;
+        }
+
+        /* Ensure mediaControls section is well-spaced */
+        #mediaControls {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+        }
+        #mediaControls h2, #mediaControls h3 {
+            margin-top: 0;
+        }
+        #clipStatus { /* General status message styling */
+            margin-top: 10px;
+            font-weight: bold;
         }
     </style>
 </head>
@@ -571,7 +663,7 @@
                     const url = URL.createObjectURL(blob);
                     const clipName = `clip_${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
                     
-                    addMediaToList('clipsList', clipName, url);
+                    addMediaToList('clipsList', clipName, url, blob);
                     recordedChunks = []; // Clear for next recording
                     
                     setTimeout(() => {
@@ -603,10 +695,10 @@
 
         function endClip() {
             if (mediaRecorder && mediaRecorder.state === "recording") {
-                mediaRecorder.stop();
-            } else {
-                alert('Clipping is not in progress.');
-                updateVideoDebugInfo('Attempted to end clip, but no recording in progress.');
+                mediaRecorder.stop(); // This will trigger the 'dataavailable' event one last time, then 'stop'
+                document.getElementById('startClipButton').disabled = false;
+                document.getElementById('endClipButton').disabled = true;
+                document.getElementById('clipStatus').textContent = 'Clip captured. Processing...';
             }
         }
 
@@ -625,44 +717,181 @@
             const ctx = canvas.getContext('2d');
             ctx.drawImage(remoteVideo, 0, 0, canvas.width, canvas.height);
 
-            try {
-                const dataUrl = canvas.toDataURL('image/png');
-                const screenshotName = `screenshot_${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
-                
-                addMediaToList('screenshotsList', screenshotName, dataUrl);
-                
-                document.getElementById('clipStatus').textContent = 'Screenshot captured!';
-                updateVideoDebugInfo('Screenshot taken.');
-                setTimeout(() => {
-                    document.getElementById('clipStatus').textContent = '';
-                }, 2000);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const fileName = `screenshot-${timestamp}.png`;
 
-            } catch (e) {
-                console.error('Error taking screenshot:', e);
-                alert('Could not take screenshot: ' + e.message);
-                updateVideoDebugInfo(`Error taking screenshot: ${e.message}`);
-                document.getElementById('clipStatus').textContent = 'Screenshot failed.';
-                 setTimeout(() => {
-                    document.getElementById('clipStatus').textContent = '';
-                }, 2000);
-            }
+            canvas.toBlob(function(blob) {
+                const dataUrl = URL.createObjectURL(blob);
+                addMediaToList('screenshotsList', fileName, dataUrl, blob); // Pass blob
+                document.getElementById('clipStatus').textContent = `Screenshot ${fileName} captured.`;
+            }, 'image/png');
         }
 
-        function addMediaToList(listId, fileName, dataUrl) {
-            const listContainer = document.getElementById(listId);
-            const list = listContainer.querySelector('ul');
-            listContainer.style.display = 'block';
-
+        function addMediaToList(listId, fileName, dataUrl, blob) { // Added blob parameter
+            const list = document.getElementById(listId).querySelector('ul');
             const listItem = document.createElement('li');
+            
+            const mediaInfoDiv = document.createElement('div');
+            mediaInfoDiv.classList.add('media-item-info');
+
             const link = document.createElement('a');
             link.href = dataUrl;
-            link.download = fileName;
             link.textContent = fileName;
-            listItem.appendChild(link);
+            link.download = fileName;
+            mediaInfoDiv.appendChild(link);
+            
+            listItem.appendChild(mediaInfoDiv);
+
+            // FR010 & FR011: Add Rename and Upload controls
+            const actionsDiv = document.createElement('div');
+            actionsDiv.classList.add('media-item-actions');
+
+            const renameInput = document.createElement('input');
+            renameInput.type = 'text';
+            renameInput.value = fileName.substring(0, fileName.lastIndexOf('.')); // Default name without extension
+            renameInput.style.display = 'none'; // Initially hidden
+            renameInput.classList.add('rename-input');
+
+            const renameButton = document.createElement('button');
+            renameButton.textContent = 'Rename';
+            renameButton.classList.add('rename-button');
+            renameButton.onclick = () => {
+                if (renameButton.textContent === 'Rename') {
+                    link.style.display = 'none';
+                    renameInput.style.display = 'inline-block';
+                    renameInput.focus();
+                    renameButton.textContent = 'Save';
+                } else {
+                    const newNameBase = renameInput.value.trim();
+                    const extension = fileName.substring(fileName.lastIndexOf('.'));
+                    if (newNameBase) {
+                        const newFileName = newNameBase + extension;
+                        link.textContent = newFileName;
+                        link.download = newFileName;
+                    }
+                    link.style.display = 'inline-block';
+                    renameInput.style.display = 'none';
+                    renameButton.textContent = 'Rename';
+                }
+            };
+
+            const uploadButton = document.createElement('button');
+            uploadButton.textContent = 'Upload';
+            uploadButton.classList.add('upload-button');
+            
+            const itemStatusSpan = document.createElement('span'); // Item-specific status
+            itemStatusSpan.classList.add('media-item-status');
+            itemStatusSpan.style.marginLeft = '10px';
+
+            uploadButton.onclick = async () => { // Make it async to use await
+                itemStatusSpan.textContent = 'Uploading...';
+                uploadButton.disabled = true;
+                renameButton.disabled = true;
+                try {
+                    // Use link.download as it reflects the current (potentially renamed) filename
+                    const success = await uploadMedia(link.download, blob, currentSessionId, itemStatusSpan); 
+                    if (success) {
+                        itemStatusSpan.textContent = 'Uploaded!';
+                        uploadButton.textContent = 'Uploaded';
+                        // uploadButton.disabled = true; // Already disabled, and stays disabled
+                    } else {
+                        itemStatusSpan.textContent = 'Upload Failed.';
+                        uploadButton.disabled = false; // Re-enable to try again
+                        renameButton.disabled = false;
+                    }
+                } catch (e) {
+                    itemStatusSpan.textContent = 'Upload Error.';
+                    uploadButton.disabled = false; // Re-enable to try again
+                    renameButton.disabled = false;
+                }
+            };
+
+            actionsDiv.appendChild(renameButton);
+            actionsDiv.appendChild(renameInput); 
+            actionsDiv.appendChild(uploadButton);
+            actionsDiv.appendChild(itemStatusSpan); // Add item status display
+            listItem.appendChild(actionsDiv);
+
             list.appendChild(listItem);
-            updateVideoDebugInfo(`Added ${fileName} to download list.`);
+            document.getElementById(listId).style.display = 'block';
         }
 
+        // FR011: Function to upload media
+        // Modified to return a boolean for success and accept an itemStatusElement
+        async function uploadMedia(fileName, blob, sessionId, itemStatusElement) {
+            const globalStatusElement = document.getElementById('clipStatus'); // General status
+            
+            if (!blob) {
+                const msg = 'No media data to upload.';
+                if (itemStatusElement) itemStatusElement.textContent = msg; else if (globalStatusElement) globalStatusElement.textContent = msg;
+                alert(msg);
+                console.error('Upload error: Blob is undefined for', fileName);
+                return false;
+            }
+            if (!sessionId) {
+                const msg = 'Session ID is missing. Cannot upload.';
+                if (itemStatusElement) itemStatusElement.textContent = msg; else if (globalStatusElement) globalStatusElement.textContent = msg;
+                alert(msg);
+                console.error('Upload error: Session ID is missing.');
+                return false;
+            }
+
+            const formData = new FormData();
+            formData.append('mediaFile', blob, fileName);
+            formData.append('sessionId', sessionId);
+            formData.append('fileName', fileName); 
+
+            if (itemStatusElement) itemStatusElement.textContent = `Uploading ${fileName}...`;
+            else if (globalStatusElement) globalStatusElement.textContent = `Uploading ${fileName}...`;
+
+            try {
+                const response = await fetch('upload.php', { 
+                    method: 'POST',
+                    body: formData
+                });
+
+                const resultText = await response.text(); 
+                console.log('Upload response text:', resultText);
+
+                if (response.ok) {
+                    const result = JSON.parse(resultText); 
+                    if (result.success) {
+                        const msg = `${fileName} uploaded.`; // Kept it short for item status
+                        if (itemStatusElement) itemStatusElement.textContent = msg; 
+                        else if (globalStatusElement) globalStatusElement.textContent = `${fileName} uploaded successfully!`;
+                        // alert(`${fileName} uploaded successfully!`); // Suppressed if itemStatusElement is used
+                        console.log('Upload successful:', result.message);
+                        return true;
+                    } else {
+                        const msg = `Upload failed: ${result.message || 'Unknown server error'}`;
+                        if (itemStatusElement) itemStatusElement.textContent = msg; else if (globalStatusElement) globalStatusElement.textContent = msg;
+                        alert(`Upload failed for ${fileName}: ${result.message || 'Unknown server error'}`);
+                        console.error('Upload failed:', result.message);
+                        return false;
+                    }
+                } else {
+                    const msg = `Server error: ${response.statusText}`; // Simplified for item status
+                    if (itemStatusElement) itemStatusElement.textContent = msg; 
+                    else if (globalStatusElement) globalStatusElement.textContent = `Upload failed for ${fileName}: ${response.statusText} - ${resultText}`;
+                    alert(`Upload failed for ${fileName}: ${response.statusText} - ${resultText}`);
+                    console.error('Upload server error:', response.status, response.statusText, resultText);
+                    return false;
+                }
+            } catch (error) {
+                const msg = `Error: ${error.message.substring(0,30)}${error.message.length > 30 ? '...' : '' }`; // Truncate long error for item status
+                if (itemStatusElement) itemStatusElement.textContent = msg;
+                else if (globalStatusElement) globalStatusElement.textContent = `Error uploading ${fileName}: ${error.message}`;
+                alert(`Error uploading ${fileName}: ${error.message}`);
+                console.error('Upload fetch error:', error);
+                return false;
+            } finally {
+                 setTimeout(() => {
+                    if (globalStatusElement && (globalStatusElement.textContent.startsWith(`Uploading ${fileName}`) || globalStatusElement.textContent.startsWith(`${fileName} uploaded`))) {
+                        globalStatusElement.textContent = '';
+                    }
+                }, 3000);
+            }
+        }
     </script>
 </body>
 </html>
