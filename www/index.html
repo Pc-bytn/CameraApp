@@ -7,11 +7,19 @@
     <title>CameraApp</title>
     <link rel="stylesheet" href="css/styles.css">
 </head>
-<body>
-    <div id="camera-container">
-        <video id="local-video" autoplay playsinline style="width:100vw;height:100vh;object-fit:cover;position:absolute;top:0;left:0;background:#000;"></video>
-        <button id="capture-btn">Capture</button>
-        <button id="send-btn">Send</button>
+<body>    <div id="camera-container">
+        <video id="local-video" autoplay playsinline style="width:100vw;height:100vh;object-fit:cover;position:absolute;top:0;left:0;background:#000;"></video>        <button id="capture-btn"><span class="btn-icon"></span></button>
+        <button id="send-btn"><span class="btn-icon"><span></span></span></button>
+        <button id="switch-cam-btn" title="Switch Camera" style="position:absolute;top:30px;right:30px;z-index:20;width:60px;height:60px;border-radius:50%;background:#007bff;color:#fff;border:none;box-shadow:0 4px 8px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;padding:0;">
+            <span class="btn-icon" style="display:block;width:24px;height:24px;">
+                <!-- Camera switch icon (simple SVG) -->
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M17 17v2a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-2" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M8 12l-3-3m0 0l3-3m-3 3h16" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </span>
+        </button>
         <img id="captured-img" style="display:none;"/>
     </div>
     <script src="cordova.js"></script>

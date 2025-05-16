@@ -1,207 +1,221 @@
 // --- WebRTC Globals ---
 let localStream;
 let peerConnection;
-const signalingServerUrl = "PRIVATE_WEB_URL"; // Will be replaced during build by GitHub Actions
+const webSocketSignalingUrl = "WEBSOCKET_PRIVATE_URL"; // Placeholder: e.g., ws://yourserver.com:8080 or wss://yourserver.com/ws
 let sessionId; // To identify this specific WebRTC session
-let pollingIntervalId; // Store the interval ID for signaling polling
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+let isReconnecting = false;
+let keepAliveIntervalId;
+let websocket; // WebSocket connection
+let iceCandidateBuffer = [];
+let answerReceived = false;
 
 const peerConnectionConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-    ]
+        { urls: 'stun:stun1.l.google.com:19302' },
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
+    ],
+    iceCandidatePoolSize: 10
 };
 
 function generateUniqueId() {
     return Math.random().toString(36).substring(2, 15);
 }
 
-async function sendSignalingMessage(message) {
-    try {
-        const response = await fetch(`${signalingServerUrl}?action=send&sessionId=${message.sessionId}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(message),
-        });
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Signaling server error: ${response.status} ${errorText}`);
-        }
-        console.log('Signaling message sent:', message.type);
-    } catch (e) {
-        alert(`Error sending signaling message (${message.type}): ${e.message}`);
-        console.error('Send signaling error:', e);
+function sendSignalingMessage(message) {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        message.sessionId = sessionId;
+        message.origin = 'initiator';
+        websocket.send(JSON.stringify(message));
+        console.log('Signaling message sent via WebSocket:', message.type);
+        return true;
+    } else {
+        alert('WebSocket is not connected. Cannot send message.');
+        console.error('WebSocket not connected, cannot send message:', message.type);
+        return false;
     }
 }
 
-async function listenForSignalingMessages(currentSessionId) {
-    const intervalId = setInterval(async () => {
-        if (!peerConnection || peerConnection.signalingState === 'closed' || peerConnection.iceConnectionState === 'closed') {
-            clearInterval(intervalId);
-            return;
+// --- Ensure WebSocket is open before sending offer ---
+function connectWebSocket(onOpenCallback) {
+    if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
+        console.log('WebSocket already connected or connecting.');
+        if (websocket.readyState === WebSocket.OPEN && typeof onOpenCallback === 'function') {
+            onOpenCallback();
         }
-        try {
-            const response = await fetch(`${signalingServerUrl}?action=receive&sessionId=${currentSessionId}&peer=initiator`);
-            if (response.ok) {
-                const message = await response.json();
-                if (message) {
-                    console.log('Received signaling message:', message);
-                    if (message.type === 'answer') {
-                        if (peerConnection.signalingState === 'have-local-offer') {
-                            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
-                            console.log('Remote description (answer) set.');
-                        } else {
-                            console.warn('Received answer but peerConnection state is not "have-local-offer". Current state:', peerConnection.signalingState);
+        return;
+    }
+
+    websocket = new WebSocket(webSocketSignalingUrl);
+
+    websocket.onopen = () => {
+        console.log('WebSocket connection established.');
+        websocket.send(JSON.stringify({
+            type: 'register',
+            sessionId: sessionId,
+            peerType: 'initiator'
+        }));
+
+        if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+        keepAliveIntervalId = setInterval(() => {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                sendSignalingMessage({ type: 'ping' });
+                console.log('Sending ping (initiator)');
+            }
+        }, 25000);
+
+        // Only call onOpenCallback after WebSocket is fully open
+        if (typeof onOpenCallback === 'function') {
+            onOpenCallback();
+        }
+    };
+
+    websocket.onmessage = async (event) => {
+        const message = JSON.parse(event.data);
+        console.log('Received WebSocket message (initiator):', message);
+
+        if (!peerConnection && message.type !== 'hangup' && message.type !== 'pong') {
+        }
+
+        switch (message.type) {
+            case 'answer':
+                if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
+                    try {
+                        console.log('Received answer from viewer, setting remote description...');
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+                        console.log('Remote description (answer) set successfully.');
+                        // Now the viewer is present, send all buffered ICE candidates
+                        answerReceived = true;
+                        if (iceCandidateBuffer.length > 0) {
+                            console.log(`Sending ${iceCandidateBuffer.length} buffered ICE candidates after answer.`);
+                            iceCandidateBuffer.forEach(candidate => {
+                                sendSignalingMessage({
+                                    type: 'candidate',
+                                    candidate: candidate,
+                                    sessionId,
+                                    origin: 'initiator'
+                                });
+                            });
+                            iceCandidateBuffer = [];
+                            console.log('Sent all buffered ICE candidates after answer.');
                         }
-                    } else if (message.type === 'candidate' && message.candidate) {
-                        if (peerConnection.remoteDescription) {
-                            try {
-                                await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-                                console.log('Added remote ICE candidate.');
-                            } catch (e) {
-                                console.error('Error adding received ICE candidate:', e);
-                            }
-                        } else {
-                            console.warn('Received ICE candidate but remote description not set yet.');
+                    } catch (error) {
+                        console.error('Error setting remote description:', error);
+                        alert('Error establishing connection with viewer: ' + error.message);
+                    }
+                } else {
+                    console.warn('Received answer but peerConnection state is not "have-local-offer" or peerConnection is null. Current state:', peerConnection ? peerConnection.signalingState : 'null');
+                }
+                break;
+            case 'candidate':
+                if (peerConnection && message.candidate) {
+                    if (peerConnection.remoteDescription) {
+                        try {
+                            await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                            console.log('Added remote ICE candidate (initiator).');
+                        } catch (e) {
+                            console.error('Error adding received ICE candidate (initiator):', e);
                         }
+                    } else {
+                        console.warn('Received ICE candidate (initiator) but remote description not set yet.');
                     }
                 }
-            } else if (response.status !== 404) {
-                console.error('Error fetching signaling messages:', response.status, await response.text());
-            }
-        } catch (e) {
-            // console.warn('Polling error:', e.message);
+                break;
+            case 'pong':
+                console.log('Received pong from server (initiator) - connection alive');
+                break;
+            case 'request_ice_restart':
+                console.log('Received ICE restart request from viewer');
+                if (peerConnection) {
+                    alert('Attempting to reconnect to viewer...');
+                    // Recreate the offer with iceRestart flag to force new ICE candidates
+                    isReconnecting = true;
+                    createAndSendOffer();
+                }
+                break;
+            case 'recovery_timeout':
+                console.log('Recovery timeout notification from viewer');
+                alert('Reconnection attempt timed out. Stream may be unreliable.');
+                break;
+            case 'hangup':
+                console.log('Received hangup from viewer/server (initiator)');
+                stopWebRTCStream(false);
+                break;
+            case 'error':
+                alert(`Server error: ${message.message}`);
+                console.error('Server error message:', message.message);
+                break;
         }
-    }, 3000);
-    return intervalId;
+    };
+
+    websocket.onerror = (error) => {
+        console.error('WebSocket error (initiator):', error);
+        alert('WebSocket connection error. Please try again.');
+        updateCaptureButtonState(false);
+    };
+
+    websocket.onclose = (event) => {
+        console.log('WebSocket connection closed (initiator):', event.reason, `Code: ${event.code}`);
+        if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+        if (peerConnection && peerConnection.iceConnectionState !== 'closed') {
+        }
+        updateCaptureButtonState(false);
+    };
 }
 
+function updateCaptureButtonState(isStreaming) {
+    const captureBtn = document.getElementById('capture-btn');
+    if (isStreaming) {
+        captureBtn.classList.add('streaming');
+    } else {
+        captureBtn.classList.remove('streaming');
+    }
+}
+
+// --- Only allow offer sending after WebSocket is open ---
 async function startWebRTCStream() {
     if (peerConnection && peerConnection.iceConnectionState !== 'closed' && peerConnection.iceConnectionState !== 'failed') {
         alert('A stream is already active or attempting to connect.');
         return;
     }
+
+    updateCaptureButtonState(true);
+
     alert('Starting WebRTC stream setup...');
+    reconnectAttempts = 0;
+    isReconnecting = false;
+
     try {
-        // Make sure we've requested permissions first
         await ensureCameraPermissions();
-        
-        // Check if camera is available
         await checkCameraAvailability();
-        
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            // Set constraints for mobile devices with fallback options
-            const constraints = {
-                video: {
-                    width: { ideal: 1280, min: 640 },
-                    height: { ideal: 720, min: 480 },
-                    facingMode: 'environment' // Use the back camera by default
-                },
-                audio: true
-            };
-            
-            try {
-                console.log('Attempting to access media with constraints:', JSON.stringify(constraints));
-                
-                // Check camera device permissions for Android 13+ explicitly
-                if (window.cordova && 
-                    device && 
-                    device.platform === "Android" && 
-                    parseInt(device.version) >= 13) {
-                    await checkAndroidCamera13Permissions();
-                }
-                
-                localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                console.log('Successfully obtained media stream');
-                
-                // Create a video element to display the local stream (optional)
-                const videoElement = document.getElementById('local-video');
-                if (videoElement) {
-                    videoElement.srcObject = localStream;
-                }
-                
-            } catch (mediaError) {
-                console.error('Initial getUserMedia error:', mediaError);
-                
-                // Try with video-only constraints first
-                try {
-                    alert('Trying video-only access... Error: ' + mediaError.message);
-                    console.log('Falling back to video-only constraints');
-                    localStream = await navigator.mediaDevices.getUserMedia({ 
-                        video: true, 
-                        audio: false 
-                    });
-                    console.log('Successfully obtained video-only stream');
-                    
-                    // Try adding audio separately if video works
-                    try {
-                        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                        const audioTrack = audioStream.getAudioTracks()[0];
-                        localStream.addTrack(audioTrack);
-                        console.log('Successfully added audio track to stream');
-                    } catch (audioError) {
-                        console.warn('Could not add audio to stream:', audioError);
-                        // Continue with video only
-                    }
-                    
-                } catch (videoError) {
-                    // Final fallback - try with minimal constraints
-                    try {
-                        alert('Trying simplified camera access... Error: ' + videoError.message);
-                        console.log('Falling back to minimal constraints');
-                        
-                        // Try with most basic settings possible
-                        const constraints = {
-                            video: {
-                                width: { ideal: 640, min: 320 },
-                                height: { ideal: 480, min: 240 },
-                                frameRate: { max: 15 }
-                            }
-                        };
-                        
-                        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                        console.log('Successfully obtained media stream with minimal constraints');
-                    } catch (fallbackError) {
-                        console.error('Fallback getUserMedia error:', fallbackError);
-                        // Try one last approach - enumerate devices first
-                        try {
-                            const devices = await navigator.mediaDevices.enumerateDevices();
-                            const videoDevices = devices.filter(device => device.kind === 'videoinput');
-                            
-                            if (videoDevices.length > 0) {
-                                // Try to use a specific camera device
-                                const constraints = {
-                                    video: {
-                                        deviceId: { exact: videoDevices[0].deviceId },
-                                        width: { ideal: 640 },
-                                        height: { ideal: 480 }
-                                    }
-                                };
-                                
-                                localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                                console.log('Successfully obtained stream using specific device ID');
-                            } else {
-                                const errorMsg = 'No cameras detected on this device';
-                                alert(errorMsg);
-                                throw new Error(errorMsg);
-                            }
-                        } catch (finalError) {
-                            const errorMsg = 'Camera access error: ' + finalError.name + ': ' + finalError.message;
-                            alert(errorMsg);
-                            throw new Error('Could not access camera: ' + finalError.message);
-                        }
-                    }
-                }
-            }
-            
-            // Setup WebRTC peer connection
-            setupPeerConnection();
-            
-        } else {
-            throw new Error('MediaDevices API not supported in this browser');
+        await initializeMediaStream();
+
+        if (!sessionId) {
+            sessionId = generateUniqueId();
+            console.log('Generated new Session ID:', sessionId);
         }
+
+        // Only setup peer connection after WebSocket is open
+        connectWebSocket(() => {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                setupPeerConnection();
+            } else {
+                alert('WebSocket not ready. Please try again.');
+                updateCaptureButtonState(false);
+            }
+        });
+
     } catch (e) {
         alert('Error starting WebRTC stream: ' + e.message);
         console.error('WebRTC Start Error:', e);
@@ -209,42 +223,179 @@ async function startWebRTCStream() {
     }
 }
 
-// Helper function to set up the peer connection
+// --- Camera Facing Mode State ---
+let currentFacingMode = 'environment'; // 'user' for front, 'environment' for back
+
+// --- Camera Switch Button Handler ---
+document.addEventListener('DOMContentLoaded', () => {
+    const switchCamBtn = document.getElementById('switch-cam-btn');
+    if (switchCamBtn) {
+        switchCamBtn.addEventListener('click', async () => {
+            try {
+                currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+                await switchCamera();
+            } catch (e) {
+                alert('Unable to switch camera: ' + (e.message || e));
+            }
+        });
+    }
+});
+
+async function initializeMediaStream() {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const constraints = {
+            video: { facingMode: { ideal: currentFacingMode } },
+            audio: true
+        };
+        try {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            const localVideo = document.getElementById('local-video');
+            if (localVideo) {
+                localVideo.srcObject = localStream;
+            }
+        } catch (e) {
+            // Try fallback if facingMode ideal fails
+            if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
+                try {
+                    const fallbackConstraints = {
+                        video: true,
+                        audio: true
+                    };
+                    localStream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+                    const localVideo = document.getElementById('local-video');
+                    if (localVideo) {
+                        localVideo.srcObject = localStream;
+                    }
+                } catch (err) {
+                    alert('Camera not available: ' + (err.message || err));
+                    throw err;
+                }
+            } else {
+                alert('Camera error: ' + (e.message || e));
+                throw e;
+            }
+        }
+    } else {
+        alert('Camera API not supported on this device.');
+        throw new Error('Camera API not supported');
+    }
+}
+
+function stopWebRTCStream(notifyServer = true) {
+    if (keepAliveIntervalId) {
+        clearInterval(keepAliveIntervalId);
+        keepAliveIntervalId = null;
+    }
+
+    if (notifyServer && sessionId && websocket && websocket.readyState === WebSocket.OPEN) {
+        sendSignalingMessage({ type: 'hangup' });
+        console.log('Sent hangup message via WebSocket.');
+    }
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => {
+            track.stop();
+            console.log(`Stopped ${track.kind} track`);
+        });
+        localStream = null;
+    }
+
+    if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+    }
+
+    if (websocket) {
+        if (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING) {
+            websocket.close();
+        }
+        websocket = null;
+    }
+
+    updateCaptureButtonState(false);
+
+    alert('Stream stopped.');
+    sessionId = null;
+
+    const videoElement = document.getElementById('local-video');
+    if (videoElement) {
+        videoElement.srcObject = null;
+    }
+
+    isReconnecting = false;
+    reconnectAttempts = 0;
+}
+
 function setupPeerConnection() {
     try {
+        if (peerConnection) {
+            peerConnection.close();
+        }
+
         peerConnection = new RTCPeerConnection(peerConnectionConfig);
-        
-        // Add tracks from local stream to peer connection
+        console.log('Created new RTCPeerConnection');
+
+        if (!localStream) {
+            console.error('Local stream not available when setting up peer connection');
+            alert('Camera stream not available. Please restart the capture.');
+            return;
+        }
+
+        // Log stream details to help with debugging
+        console.log(`Local stream has ${localStream.getTracks().length} tracks`);
         localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
-            console.log('Added track to peer connection:', track.kind);
+            console.log(`Adding track to PeerConnection: ${track.kind}, enabled: ${track.enabled}, muted: ${track.muted}`);
+            const sender = peerConnection.addTrack(track, localStream);
+            if (sender) {
+                console.log('Track added successfully to peer connection');
+            } else {
+                console.warn('Failed to add track to peer connection');
+            }
         });
-        
-        // Set up event handlers
+
         peerConnection.onicecandidate = event => {
             if (event.candidate) {
-                sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId });
+                if (!answerReceived) {
+                    // Buffer ICE candidates until answer is received
+                    iceCandidateBuffer.push(event.candidate);
+                    console.log('Buffered ICE candidate (waiting for viewer/answer)');
+                } else {
+                    sendSignalingMessage({
+                        type: 'candidate',
+                        candidate: event.candidate,
+                        sessionId,
+                        origin: 'initiator'
+                    });
+                }
             }
         };
-        
+
         peerConnection.oniceconnectionstatechange = () => {
-            console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
-            if (peerConnection.iceConnectionState === 'connected') {
-                alert('Stream connected!');
+            console.log(`ICE connection state (initiator): ${peerConnection.iceConnectionState}`);
+            if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                alert('Stream connected successfully!');
+                reconnectAttempts = 0;
+                isReconnecting = false;
             } else if (peerConnection.iceConnectionState === 'failed') {
-                alert('Stream connection failed. Check STUN/TURN servers and network.');
-                stopWebRTCStream();
-            } else if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
-                alert('Stream disconnected or closed.');
-                stopWebRTCStream();
+                handleConnectionFailure();
+            } else if (peerConnection.iceConnectionState === 'disconnected') {
+                alert('Stream temporarily disconnected. Attempting to recover...');
+            } else if (peerConnection.iceConnectionState === 'closed') {
+                alert('Stream closed.');
+                stopWebRTCStream(false);
             }
         };
-        
+
         peerConnection.onsignalingstatechange = () => {
             console.log(`Signaling state: ${peerConnection.signalingState}`);
         };
-        
-        // Create and send offer
+
+        // Reset buffer and flag
+        iceCandidateBuffer = [];
+        answerReceived = false;
         createAndSendOffer();
     } catch (error) {
         console.error('Error setting up peer connection:', error);
@@ -253,103 +404,165 @@ function setupPeerConnection() {
     }
 }
 
-// Helper function to create and send offer
+async function handleConnectionFailure() {
+    if (isReconnecting) return;
+
+    isReconnecting = true;
+
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        alert(`Connection lost. Attempting to reconnect... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+
+        try {
+            if (peerConnection && peerConnection.signalingState !== 'closed') {
+                // Use ICE restart instead of recreating the connection if possible
+                console.log('Attempting ICE restart');
+                createAndSendOffer();
+                
+                // Set a timeout for this reconnection attempt
+                setTimeout(() => {
+                    if (isReconnecting && peerConnection && 
+                        (peerConnection.iceConnectionState === 'disconnected' || 
+                         peerConnection.iceConnectionState === 'failed')) {
+                        console.log(`Reconnection attempt ${reconnectAttempts} timed out`);
+                        
+                        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+                            alert('Failed to reconnect after multiple attempts.');
+                            stopWebRTCStream();
+                        } else {
+                            // Try a more aggressive approach with a new peer connection
+                            if (peerConnection) {
+                                peerConnection.close();
+                                peerConnection = null;
+                            }
+                            setupPeerConnection();
+                        }
+                    }
+                }, 10000); // 10 second timeout for reconnection attempt
+            } else {
+                // PeerConnection is already closed, create a new one
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+                setupPeerConnection();
+            }
+        } catch (e) {
+            console.error('Reconnection attempt failed:', e);
+            setTimeout(() => {
+                isReconnecting = false;
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    handleConnectionFailure();
+                } else {
+                    alert('Failed to reconnect after multiple attempts.');
+                    stopWebRTCStream();
+                }
+            }, 3000);
+        }
+    } else {
+        alert('Failed to reconnect after multiple attempts.');
+        stopWebRTCStream();
+    }
+}
+
 async function createAndSendOffer() {
     try {
-        const offer = await peerConnection.createOffer();
+        if (!peerConnection) {
+            console.error("Cannot create offer: PeerConnection does not exist.");
+            return;
+        }
+        
+        console.log(`Creating offer with iceRestart: ${isReconnecting}`);
+        const offerOptions = {
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true
+        };
+        
+        // Add iceRestart flag when reconnecting to force new ICE candidates
+        if (isReconnecting) {
+            offerOptions.iceRestart = true;
+        }
+        
+        const offer = await peerConnection.createOffer(offerOptions);
         await peerConnection.setLocalDescription(offer);
-        
-        // Generate session ID and send offer
-        sessionId = generateUniqueId();
-        alert(`Streaming session ID: ${sessionId}\nShare this ID with the viewer.`);
-        
-        await sendSignalingMessage({ type: 'offer', offer: offer, sessionId });
-        
-        // Start listening for messages
-        pollingIntervalId = await listenForSignalingMessages(sessionId);
-        
+
+        if (!sessionId) {
+            console.error("Session ID is not set. Cannot send offer.");
+            return;
+        }
+
+        console.log('Local description (offer) set. Sending offer...');
+        const success = sendSignalingMessage({ type: 'offer', offer: offer });
+        if (!success) {
+            alert('Failed to send offer. WebSocket not ready or error occurred.');
+        } else {
+            // Reset reconnecting flag only after a successful reconnection
+            if (peerConnection.iceConnectionState === 'connected' || 
+                peerConnection.iceConnectionState === 'completed') {
+                isReconnecting = false;
+            }
+            
+            // Send notification to viewer that we're attempting recovery
+            if (isReconnecting) {
+                sendSignalingMessage({ type: 'recovery_attempt' });
+            }
+        }
     } catch (error) {
         console.error('Error creating or sending offer:', error);
-        alert('Failed to create connection offer: ' + error.message);
-        throw error;
+        alert('Failed to create or send offer: ' + error.message);
+        stopWebRTCStream();
     }
 }
 
-function stopWebRTCStream() {
-    // Clear any polling intervals
-    if (pollingIntervalId) {
-        clearInterval(pollingIntervalId);
-        pollingIntervalId = null;
-    }
-    
-    // Stop all tracks in the local stream
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            track.stop();
-            console.log(`Stopped ${track.kind} track`);
-        });
-        localStream = null;
-    }
-    
-    // Close the peer connection
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-    }
-    
-    alert('Stream stopped.');
-    sessionId = null;
-    
-    // Clear video element if exists
-    const videoElement = document.getElementById('local-video');
-    if (videoElement) {
-        videoElement.srcObject = null;
-    }
-}
-
-// Helper function to share the session link
 async function shareSessionLink() {
     if (!sessionId) {
-        alert('Please start a stream first to get a session ID.');
+        alert('Please start the stream first to get a session ID.');
         return;
     }
 
-    // Extract the base URL from signalingServerUrl
-    const viewerBaseUrl = signalingServerUrl.substring(0, signalingServerUrl.lastIndexOf('/') + 1);
-    const shareUrl = `${viewerBaseUrl}viewer.html?sessionId=${sessionId}`;
+    try {
+        const wsUrlObj = new URL(webSocketSignalingUrl);
+        const viewerPageUrl = `${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//PRIVATE_WEB_URL/sys/viewer.html?sessionId=${sessionId}`;
 
-    if (navigator.share) {
-        try {
-            await navigator.share({
-                title: 'CameraApp Live Stream',
-                text: 'Join my live stream session!',
-                url: shareUrl,
-            });
-            console.log('Link shared successfully');
-        } catch (error) {
-            console.error('Error using Web Share API:', error);
-            // Fallback if Web Share API fails or is cancelled
-            prompt('Please copy this link to share the stream:', shareUrl);
+        alert(`Share this link with the viewer: ${viewerPageUrl}`);
+
+        if (navigator.share) {
+            await navigator.share({ title: 'Stream Link', text: 'Join my stream:', url: viewerPageUrl });
+            console.log('Stream link shared successfully.');
+        } else if (navigator.clipboard && navigator.clipboard.writeText) {
+            try {
+                await navigator.clipboard.writeText(viewerPageUrl);
+                alert('Stream link copied to clipboard!');
+                console.log('Link copied to clipboard');
+            } catch (clipboardError) {
+                // Fallback to prompt if clipboard fails (e.g., permission denied)
+                prompt('Copy this link to share the stream:', viewerPageUrl);
+                alert('Clipboard write failed. Please copy the link manually.');
+                console.warn('Clipboard write error:', clipboardError);
+            }
+        } else {
+            prompt('Please copy this link to share the stream:', viewerPageUrl);
         }
-    } else {
-        // Fallback for browsers that don't support Web Share API
-        prompt('Please copy this link to share the stream:', shareUrl);
+    } catch (error) {
+        alert('Error sharing session link: ' + error.message);
+        console.error('Share error:', error);
     }
 }
 
 function onDeviceReady() {
     console.log('Device ready event fired');
-    
-    // Check if the device plugin is available (needed for Android version detection)
+
     if (!window.device) {
         console.warn('Device plugin not available - some Android 13+ specific features may not work correctly');
     } else {
         console.log(`Device platform: ${device.platform}, version: ${device.version}`);
     }
-    
-    // Check for camera permissions on startup
+
+    updateCaptureButtonState(false);
+
     requestCameraPermission();
-      document.getElementById('capture-btn').addEventListener('click', function() {
+
+    document.getElementById('capture-btn').addEventListener('click', function() {
         if (!peerConnection || peerConnection.iceConnectionState === 'closed' || peerConnection.iceConnectionState === 'failed') {
             startWebRTCStream();
         } else {
@@ -357,7 +570,6 @@ function onDeviceReady() {
         }
     });
 
-    // Add event listener for the Send button
     document.getElementById('send-btn').addEventListener('click', shareSessionLink);
 }
 
@@ -382,7 +594,6 @@ function requestCameraPermission() {
     }
 }
 
-// Check if camera is actually available and working
 function checkCameraAvailability() {
     return new Promise((resolve, reject) => {
         if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
@@ -403,46 +614,40 @@ function checkCameraAvailability() {
                 });
         } else {
             console.warn('mediaDevices.enumerateDevices not supported');
-            // Just assume camera is available if we can't check
             resolve(true);
         }
     });
 }
 
-// Special function for handling Android 13+ camera permissions
 function checkAndroidCamera13Permissions() {
     return new Promise((resolve, reject) => {
         if (window.cordova && cordova.plugins && cordova.plugins.permissions) {
             const permissions = cordova.plugins.permissions;
-            
-            // For Android 13+, need to check specific permissions
+
             if (device && device.platform === "Android" && parseInt(device.version) >= 13) {
                 console.log("Checking Android 13+ specific camera permissions...");
-                
-                // On Android 13+, we may need to check for READ_MEDIA_IMAGES, READ_MEDIA_VIDEO permissions
+
                 const requiredPermissions = [
                     permissions.CAMERA,
                     permissions.RECORD_AUDIO,
                     permissions.MODIFY_AUDIO_SETTINGS,
-                    // Android 13 specific permissions if available
                     permissions.READ_MEDIA_IMAGES || "android.permission.READ_MEDIA_IMAGES",
                     permissions.READ_MEDIA_VIDEO || "android.permission.READ_MEDIA_VIDEO"
                 ];
-                
+
                 function requestNextPermission(index) {
                     if (index >= requiredPermissions.length) {
                         console.log("All Android 13+ permissions checked.");
                         resolve();
                         return;
                     }
-                    
+
                     const permission = requiredPermissions[index];
                     if (!permission) {
-                        // Skip if permission is undefined (might happen for newer permissions on older plugin)
                         requestNextPermission(index + 1);
                         return;
                     }
-                    
+
                     permissions.checkPermission(permission, status => {
                         if (status.hasPermission) {
                             console.log(`Permission ${permission} already granted`);
@@ -454,50 +659,40 @@ function checkAndroidCamera13Permissions() {
                                     console.log(`Permission ${permission} granted`);
                                 } else {
                                     console.log(`Permission ${permission} denied`);
-                                    // Continue anyway - not all might be required on all devices
                                 }
                                 requestNextPermission(index + 1);
                             }, error => {
                                 console.warn(`Error requesting permission ${permission}:`, error);
-                                // Continue with next permission regardless of error
                                 requestNextPermission(index + 1);
                             });
                         }
                     }, error => {
                         console.warn(`Error checking permission ${permission}:`, error);
-                        // Continue with next permission regardless of error
                         requestNextPermission(index + 1);
                     });
                 }
-                
-                // Start requesting permissions
+
                 requestNextPermission(0);
             } else {
-                // For Android versions below 13, normal permissions should be sufficient
                 resolve();
             }
         } else {
-            // Resolve if not on Cordova or plugins not available
             resolve();
         }
     });
 }
 
-// Updated function to ensure camera permissions are granted
 function ensureCameraPermissions() {
     return new Promise((resolve, reject) => {
-        // Check if we're running in a Cordova environment
         if (window.cordova && cordova.plugins && cordova.plugins.permissions) {
             const permissions = cordova.plugins.permissions;
-            
-            // Android permissions to request
+
             const requiredPermissions = [
                 permissions.CAMERA,
                 permissions.RECORD_AUDIO,
                 permissions.MODIFY_AUDIO_SETTINGS
             ];
-            
-            // If on Android 13+, add specific media permissions when using standard permissions API
+
             if (device && device.platform === "Android" && parseInt(device.version) >= 13) {
                 if (permissions.READ_MEDIA_IMAGES) {
                     requiredPermissions.push(permissions.READ_MEDIA_IMAGES);
@@ -506,39 +701,31 @@ function ensureCameraPermissions() {
                     requiredPermissions.push(permissions.READ_MEDIA_VIDEO);
                 }
             }
-            
-            // Check permissions
+
             function checkAndRequestPermission(permissionIndex) {
                 if (permissionIndex >= requiredPermissions.length) {
-                    // All permissions granted
                     resolve();
                     return;
                 }
-                
+
                 const permission = requiredPermissions[permissionIndex];
                 if (!permission) {
-                    // Skip if permission is undefined (might happen for newer permissions on older plugin)
                     checkAndRequestPermission(permissionIndex + 1);
                     return;
                 }
-                
+
                 permissions.checkPermission(permission, status => {
                     if (status.hasPermission) {
-                        // This permission is granted, move to next
                         checkAndRequestPermission(permissionIndex + 1);
                     } else {
-                        // Request this permission
                         permissions.requestPermission(permission, status => {
                             if (status.hasPermission) {
-                                // Permission granted, move to next
                                 checkAndRequestPermission(permissionIndex + 1);
                             } else {
-                                // Permission denied
                                 console.error(`Permission ${permission} denied`);
                                 if (permission === permissions.CAMERA) {
                                     reject(new Error('Camera permission not granted - required for this app'));
                                 } else {
-                                    // For non-critical permissions, continue anyway
                                     checkAndRequestPermission(permissionIndex + 1);
                                 }
                             }
@@ -547,7 +734,6 @@ function ensureCameraPermissions() {
                             if (permission === permissions.CAMERA) {
                                 reject(new Error('Error requesting camera permission: ' + error));
                             } else {
-                                // For non-critical permissions, continue anyway
                                 checkAndRequestPermission(permissionIndex + 1);
                             }
                         });
@@ -557,20 +743,133 @@ function ensureCameraPermissions() {
                     if (permission === permissions.CAMERA) {
                         reject(new Error('Error checking camera permission: ' + error));
                     } else {
-                        // For non-critical permissions, continue anyway
                         checkAndRequestPermission(permissionIndex + 1);
                     }
                 });
             }
-            
-            // Start checking permissions
+
             checkAndRequestPermission(0);
         } else {
-            // Not in Cordova or plugins not available - assume permissions granted
             console.log('Not using Cordova permissions plugin, assuming permissions granted');
             resolve();
         }
     });
+}
+
+// --- Function to switch camera while maintaining WebRTC connection ---
+async function switchCamera() {
+    if (!localStream) {
+        console.warn('No local stream available to switch camera.');
+        alert('Camera stream not available. Please start the stream first.');
+        return;
+    }
+
+    // Get current video track
+    const currentVideoTrack = localStream.getVideoTracks()[0];
+    if (!currentVideoTrack) {
+        console.warn('No video track in local stream.');
+        return;
+    }
+
+    // Check the current facing mode
+    let isFrontCamera;
+    try {
+        isFrontCamera = currentVideoTrack.getSettings().facingMode === 'user';
+    } catch (e) {
+        // Some browsers might not support getSettings()
+        isFrontCamera = currentFacingMode === 'user';
+    }
+
+    // Use ideal constraint instead of exact for better compatibility
+    const newFacingMode = isFrontCamera ? 'environment' : 'user';
+    currentFacingMode = newFacingMode;
+
+    try {
+        // Stop the current video track
+        currentVideoTrack.stop();
+
+        // Get a new stream with the desired facing mode
+        const newStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: newFacingMode } },
+            audio: false // Don't get audio as we'll keep the existing audio track
+        });
+
+        const newVideoTrack = newStream.getVideoTracks()[0];
+
+        // Replace the track in the local stream
+        // First remove old track from localStream
+        localStream.removeTrack(currentVideoTrack);
+        // Add new track to localStream
+        localStream.addTrack(newVideoTrack);
+
+        // Update the video element
+        const localVideo = document.getElementById('local-video');
+        if (localVideo) {
+            localVideo.srcObject = localStream;
+        }
+
+        // Update the track in the RTCPeerConnection if it exists
+        if (peerConnection && peerConnection.signalingState !== 'closed') {
+            const senders = peerConnection.getSenders();
+            const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+            
+            if (videoSender) {
+                console.log('Replacing video track in RTCPeerConnection');
+                await videoSender.replaceTrack(newVideoTrack);
+                console.log('Video track replaced successfully');
+            }
+        }
+    } catch (error) {
+        console.error('Error switching camera:', error);
+        alert('Error switching camera: ' + error.message);
+
+        // Try fallback to general video constraints
+        try {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false
+            });
+
+            const fallbackVideoTrack = fallbackStream.getVideoTracks()[0];
+
+            // Replace in local stream
+            localStream.removeTrack(currentVideoTrack);
+            localStream.addTrack(fallbackVideoTrack);
+
+            // Update video element
+            const localVideo = document.getElementById('local-video');
+            if (localVideo) {
+                localVideo.srcObject = localStream;
+            }
+
+            // Update in peer connection
+            if (peerConnection && peerConnection.signalingState !== 'closed') {
+                const senders = peerConnection.getSenders();
+                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+                
+                if (videoSender) {
+                    await videoSender.replaceTrack(fallbackVideoTrack);
+                }
+            }
+        } catch (fallbackError) {
+            console.error('Fallback camera also failed:', fallbackError);
+            alert('Failed to switch camera. Your device may not support this feature.');
+
+            // If all fails, try to reinitialize with default camera
+            try {
+                await initializeMediaStream();
+                
+                // If we have an active connection, we need to reconnect
+                if (peerConnection && peerConnection.signalingState !== 'closed') {
+                    alert('Reconnecting to update camera change...');
+                    createAndSendOffer();
+                }
+            } catch (e) {
+                console.error('Failed to recover camera after switch error:', e);
+                alert('Camera recovery failed. Try restarting the stream.');
+            }
+        }
+    }
 }
 
 document.addEventListener('deviceready', onDeviceReady, false);
