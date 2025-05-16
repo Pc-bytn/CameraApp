@@ -223,103 +223,64 @@ async function startWebRTCStream() {
     }
 }
 
+// --- Camera Facing Mode State ---
+let currentFacingMode = 'environment'; // 'user' for front, 'environment' for back
+
+// --- Camera Switch Button Handler ---
+document.addEventListener('DOMContentLoaded', () => {
+    const switchCamBtn = document.getElementById('switch-cam-btn');
+    if (switchCamBtn) {
+        switchCamBtn.addEventListener('click', async () => {
+            try {
+                currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+                await initializeMediaStream();
+            } catch (e) {
+                alert('Unable to switch camera: ' + (e.message || e));
+            }
+        });
+    }
+});
+
 async function initializeMediaStream() {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const constraints = {
-            video: {
-                width: { ideal: 1280, min: 640 },
-                height: { ideal: 720, min: 480 },
-                facingMode: 'environment'
-            },
+            video: { facingMode: { exact: currentFacingMode } },
             audio: true
         };
-
         try {
-            console.log('Attempting to access media with constraints:', JSON.stringify(constraints));
-
-            if (window.cordova &&
-                device &&
-                device.platform === "Android" &&
-                parseInt(device.version) >= 13) {
-                await checkAndroidCamera13Permissions();
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
             }
-
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            console.log('Successfully obtained media stream');
-
-            const videoElement = document.getElementById('local-video');
-            if (videoElement) {
-                videoElement.srcObject = localStream;
+            const localVideo = document.getElementById('local-video');
+            if (localVideo) {
+                localVideo.srcObject = localStream;
             }
-
-        } catch (mediaError) {
-            console.error('Initial getUserMedia error:', mediaError);
-
-            try {
-                alert('Trying video-only access... Error: ' + mediaError.message);
-                console.log('Falling back to video-only constraints');
-                localStream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
-                    audio: false
-                });
-                console.log('Successfully obtained video-only stream');
-
+        } catch (e) {
+            // Try fallback if facingMode exact fails
+            if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
                 try {
-                    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    const audioTrack = audioStream.getAudioTracks()[0];
-                    localStream.addTrack(audioTrack);
-                    console.log('Successfully added audio track to stream');
-                } catch (audioError) {
-                    console.warn('Could not add audio to stream:', audioError);
-                }
-
-            } catch (videoError) {
-                try {
-                    alert('Trying simplified camera access... Error: ' + videoError.message);
-                    console.log('Falling back to minimal constraints');
-
-                    const constraints = {
-                        video: {
-                            width: { ideal: 640, min: 320 },
-                            height: { ideal: 480, min: 240 },
-                            frameRate: { max: 15 }
-                        }
+                    const fallbackConstraints = {
+                        video: true,
+                        audio: true
                     };
-
-                    localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                    console.log('Successfully obtained media stream with minimal constraints');
-                } catch (fallbackError) {
-                    console.error('Fallback getUserMedia error:', fallbackError);
-                    try {
-                        const devices = await navigator.mediaDevices.enumerateDevices();
-                        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-
-                        if (videoDevices.length > 0) {
-                            const constraints = {
-                                video: {
-                                    deviceId: { exact: videoDevices[0].deviceId },
-                                    width: { ideal: 640 },
-                                    height: { ideal: 480 }
-                                }
-                            };
-
-                            localStream = await navigator.mediaDevices.getUserMedia(constraints);
-                            console.log('Successfully obtained stream using specific device ID');
-                        } else {
-                            const errorMsg = 'No cameras detected on this device';
-                            alert(errorMsg);
-                            throw new Error(errorMsg);
-                        }
-                    } catch (finalError) {
-                        const errorMsg = 'Camera access error: ' + finalError.name + ': ' + finalError.message;
-                        alert(errorMsg);
-                        throw new Error('Could not access camera: ' + finalError.message);
+                    localStream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+                    const localVideo = document.getElementById('local-video');
+                    if (localVideo) {
+                        localVideo.srcObject = localStream;
                     }
+                } catch (err) {
+                    alert('Camera not available: ' + (err.message || err));
+                    throw err;
                 }
+            } else {
+                alert('Camera error: ' + (e.message || e));
+                throw e;
             }
         }
     } else {
-        throw new Error('MediaDevices API not supported in this browser');
+        alert('Camera API not supported on this device.');
+        throw new Error('Camera API not supported');
     }
 }
 
