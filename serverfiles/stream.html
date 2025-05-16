@@ -90,32 +90,19 @@
             }
             statusDiv.textContent = `Ready to stream to session: ${sessionId}`;
             startStreamBtn.onclick = startStreaming;
-            stopStreamBtn.onclick = stopStreaming;
-            switchCamBtn.onclick = switchCamera;
-            if (switchCamBtn) {
-                switchCamBtn.addEventListener('click', async () => {
-                    try {
-                        currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
-                        await startCameraPreview();
-                    } catch (e) {
-                        alert('Unable to switch camera: ' + (e.message || e));
-                    }
-                });
-            }
-        });
-
-        async function startCameraPreview() {
+            stopStreamBtn.onclick = stopStreaming;            switchCamBtn.onclick = switchCamera;
+        });        async function startCameraPreview() {
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
             }
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: { exact: currentFacingMode } },
+                    video: { facingMode: currentFacingMode },
                     audio: true
                 });
                 localVideo.srcObject = localStream;
             } catch (e) {
-                // Fallback if facingMode exact fails
+                // Fallback if facingMode fails
                 if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
                     try {
                         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -373,9 +360,7 @@
                 alert(`Error creating offer: ${error.message}`);
                 stopStreaming(false);
             }
-        }
-
-        async function switchCamera() {
+        }        async function switchCamera() {
             if (!localStream) {
                 console.warn('No local stream available to switch camera.');
                 return;
@@ -384,8 +369,9 @@
             const currentTrack = localStream.getVideoTracks()[0];
             const isFrontCamera = currentTrack.getSettings().facingMode === 'user';
 
-            const newFacingMode = isFrontCamera ? { exact: 'environment' } : { exact: 'user' };
-
+            // Use ideal constraint instead of exact for better compatibility
+            const newFacingMode = isFrontCamera ? { ideal: 'environment' } : { ideal: 'user' };
+            
             try {
                 // Stop the current video track
                 currentTrack.stop();
@@ -412,11 +398,39 @@
                 }
 
                 console.log(`Switched camera to ${isFrontCamera ? 'back' : 'front'} camera.`);
-                statusDiv.textContent = `Using ${isFrontCamera ? 'back' : 'front'} camera.`;
-            } catch (error) {
+                statusDiv.textContent = `Using ${isFrontCamera ? 'back' : 'front'} camera.`;            } catch (error) {
                 console.error('Error switching camera:', error);
                 statusDiv.textContent = 'Error switching camera: ' + error.message;
                 alert('Error switching camera: ' + error.message);
+                
+                // Fallback to default video constraints if facing mode fails
+                try {
+                    console.log('Attempting fallback to default camera...');
+                    const fallbackStream = await navigator.mediaDevices.getUserMedia({
+                        video: true,
+                        audio: true
+                    });
+                    
+                    // Replace tracks in local stream
+                    localStream.removeTrack(currentTrack);
+                    fallbackStream.getVideoTracks().forEach(track => localStream.addTrack(track));
+                    
+                    // Update the video element
+                    localVideo.srcObject = localStream;
+                    
+                    // Update peer connection if active
+                    if (peerConnection && peerConnection.getSenders().length > 0) {
+                        const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+                        if (sender) {
+                            await sender.replaceTrack(localStream.getVideoTracks()[0]);
+                            console.log('Replaced video track in peer connection with fallback camera');
+                        }
+                    }
+                } catch (fallbackError) {
+                    console.error('Fallback camera also failed:', fallbackError);
+                    statusDiv.textContent = 'Could not switch camera. Please try again later.';
+                    alert('Failed to switch camera. Your device may not support this feature.');
+                }
             }
         }
     </script>

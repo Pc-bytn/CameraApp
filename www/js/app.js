@@ -233,7 +233,7 @@ document.addEventListener('DOMContentLoaded', () => {
         switchCamBtn.addEventListener('click', async () => {
             try {
                 currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
-                await initializeMediaStream();
+                await switchCamera();
             } catch (e) {
                 alert('Unable to switch camera: ' + (e.message || e));
             }
@@ -244,7 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initializeMediaStream() {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const constraints = {
-            video: { facingMode: { exact: currentFacingMode } },
+            video: { facingMode: { ideal: currentFacingMode } },
             audio: true
         };
         try {
@@ -257,7 +257,7 @@ async function initializeMediaStream() {
                 localVideo.srcObject = localStream;
             }
         } catch (e) {
-            // Try fallback if facingMode exact fails
+            // Try fallback if facingMode ideal fails
             if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
                 try {
                     const fallbackConstraints = {
@@ -754,6 +754,122 @@ function ensureCameraPermissions() {
             resolve();
         }
     });
+}
+
+// --- Function to switch camera while maintaining WebRTC connection ---
+async function switchCamera() {
+    if (!localStream) {
+        console.warn('No local stream available to switch camera.');
+        alert('Camera stream not available. Please start the stream first.');
+        return;
+    }
+
+    // Get current video track
+    const currentVideoTrack = localStream.getVideoTracks()[0];
+    if (!currentVideoTrack) {
+        console.warn('No video track in local stream.');
+        return;
+    }
+
+    // Check the current facing mode
+    let isFrontCamera;
+    try {
+        isFrontCamera = currentVideoTrack.getSettings().facingMode === 'user';
+    } catch (e) {
+        // Some browsers might not support getSettings()
+        isFrontCamera = currentFacingMode === 'user';
+    }
+
+    // Use ideal constraint instead of exact for better compatibility
+    const newFacingMode = isFrontCamera ? 'environment' : 'user';
+    currentFacingMode = newFacingMode;
+
+    try {
+        // Stop the current video track
+        currentVideoTrack.stop();
+
+        // Get a new stream with the desired facing mode
+        const newStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: newFacingMode } },
+            audio: false // Don't get audio as we'll keep the existing audio track
+        });
+
+        const newVideoTrack = newStream.getVideoTracks()[0];
+
+        // Replace the track in the local stream
+        // First remove old track from localStream
+        localStream.removeTrack(currentVideoTrack);
+        // Add new track to localStream
+        localStream.addTrack(newVideoTrack);
+
+        // Update the video element
+        const localVideo = document.getElementById('local-video');
+        if (localVideo) {
+            localVideo.srcObject = localStream;
+        }
+
+        // Update the track in the RTCPeerConnection if it exists
+        if (peerConnection && peerConnection.signalingState !== 'closed') {
+            const senders = peerConnection.getSenders();
+            const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+            
+            if (videoSender) {
+                console.log('Replacing video track in RTCPeerConnection');
+                await videoSender.replaceTrack(newVideoTrack);
+                console.log('Video track replaced successfully');
+            }
+        }
+    } catch (error) {
+        console.error('Error switching camera:', error);
+        alert('Error switching camera: ' + error.message);
+
+        // Try fallback to general video constraints
+        try {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false
+            });
+
+            const fallbackVideoTrack = fallbackStream.getVideoTracks()[0];
+
+            // Replace in local stream
+            localStream.removeTrack(currentVideoTrack);
+            localStream.addTrack(fallbackVideoTrack);
+
+            // Update video element
+            const localVideo = document.getElementById('local-video');
+            if (localVideo) {
+                localVideo.srcObject = localStream;
+            }
+
+            // Update in peer connection
+            if (peerConnection && peerConnection.signalingState !== 'closed') {
+                const senders = peerConnection.getSenders();
+                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+                
+                if (videoSender) {
+                    await videoSender.replaceTrack(fallbackVideoTrack);
+                }
+            }
+        } catch (fallbackError) {
+            console.error('Fallback camera also failed:', fallbackError);
+            alert('Failed to switch camera. Your device may not support this feature.');
+
+            // If all fails, try to reinitialize with default camera
+            try {
+                await initializeMediaStream();
+                
+                // If we have an active connection, we need to reconnect
+                if (peerConnection && peerConnection.signalingState !== 'closed') {
+                    alert('Reconnecting to update camera change...');
+                    createAndSendOffer();
+                }
+            } catch (e) {
+                console.error('Failed to recover camera after switch error:', e);
+                alert('Camera recovery failed. Try restarting the stream.');
+            }
+        }
+    }
 }
 
 document.addEventListener('deviceready', onDeviceReady, false);
