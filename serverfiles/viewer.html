@@ -216,8 +216,16 @@
         }
     </style>
 </head>
-<body>    <div class="container">
-        <h1>WebRTC Stream Viewer</h1>
+<body>
+    <div class="container">
+        <h1>WebRTC Stream Viewer / Host</h1>
+
+        <div id="hostControls" style="margin-bottom: 20px; padding: 15px; background-color: #e9ecef; border-radius: 8px;">
+            <h2>Host Session</h2>
+            <button onclick="initiateHostSession()">Initiate New Host Session</button>
+            <div id="hostSessionInfo" style="margin-top: 10px;"></div>
+        </div>
+
         <div class="connection-controls">
             <input type="text" id="sessionIdInput" placeholder="Enter Session ID from App">
             <button onclick="joinStream()">Join Stream</button>
@@ -258,6 +266,7 @@
         let reconnectTimeoutId = null;
         const RECONNECT_TIMEOUT = 15000; // 15 seconds timeout for reconnection attempts
         let isDebugMode = false; // Debug mode toggle
+        let currentRole = 'viewer'; // Can be 'viewer' or 'host'
 
         let mediaRecorder;
         let recordedChunks = [];
@@ -265,7 +274,20 @@
         let clipStartTime;        document.addEventListener('DOMContentLoaded', function() {
             const urlParams = new URLSearchParams(window.location.search);
             const sessionIdFromUrl = urlParams.get('sessionId');
+            const roleFromUrl = urlParams.get('role'); // Check for role=host
             const debugParam = urlParams.get('debug');
+
+            if (roleFromUrl === 'host') {
+                currentRole = 'host';
+                document.getElementById('hostControls').style.display = 'block';
+                 // Hide normal viewer join if role is host and no session ID yet
+                if (!sessionIdFromUrl) {
+                    document.querySelector('.connection-controls').style.display = 'none';
+                }
+            } else {
+                currentRole = 'viewer';
+                document.getElementById('hostControls').style.display = 'none';
+            }
             
             // Initialize debug mode from URL parameter if present
             if (debugParam === '1' || debugParam === 'true') {
@@ -297,7 +319,7 @@
             // Auto-join if session ID is in URL
             if (sessionIdFromUrl) {
                 document.getElementById('sessionIdInput').value = sessionIdFromUrl;
-                joinStream();
+                joinStream(); // Auto-join if sessionId is present (for both roles if applicable)
             }
         });
 
@@ -325,11 +347,14 @@
             statusElement.textContent = message;
             statusElement.className = status;
 
-            // Enable/disable media controls based on connection status
             const connected = (status === 'connected');
             document.getElementById('startClipButton').disabled = !connected;
-            // endClipButton is handled by startClip/endClip logic
             document.getElementById('screenshotButton').disabled = !connected;
+
+            // If host, and connected, ensure host controls remain visible
+            if (currentRole === 'host') {
+                document.getElementById('hostControls').style.display = 'block';
+            }
         }        function updateVideoDebugInfo(message) {
             // Always log to console regardless of debug mode
             console.log(`Video Debug: ${message}`);
@@ -346,12 +371,13 @@
         function sendSignalingMessage(message) {
             if (websocket && websocket.readyState === WebSocket.OPEN) {
                 message.sessionId = currentSessionId;
-                message.origin = 'viewer';
+                // message.origin = 'viewer'; // Old: only viewer
+                message.origin = currentRole; // 'viewer' or 'host'
                 websocket.send(JSON.stringify(message));
-                console.log('Signaling message sent via WebSocket (viewer):', message.type);
+                console.log(`Signaling message sent via WebSocket (${currentRole}):`, message.type);
                 return true;
             } else {
-                console.error('WebSocket not connected, cannot send message (viewer):', message.type);
+                console.error(`WebSocket not connected, cannot send message (${currentRole}):`, message.type);
                 updateConnectionStatus('disconnected', 'WebSocket not connected. Cannot send message.');
                 return false;
             }
@@ -366,12 +392,13 @@
             websocket = new WebSocket(webSocketSignalingUrl);
 
             websocket.onopen = () => {
-                console.log('WebSocket connection established (viewer).');
+                console.log(`WebSocket connection established (${currentRole}).`);
                 updateConnectionStatus('connecting', 'WebSocket connected. Registering session...');
                 websocket.send(JSON.stringify({
                     type: 'register',
                     sessionId: currentSessionId,
-                    peerType: 'viewer'
+                    // peerType: 'viewer' // Old
+                    peerType: currentRole // 'viewer' or 'host'
                 }));
 
                 if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
@@ -385,15 +412,14 @@
 
             websocket.onmessage = async (event) => {
                 const message = JSON.parse(event.data);
-                console.log('Received WebSocket message (viewer):', message);
+                console.log(`Received WebSocket message (${currentRole}):`, message);
 
                 switch (message.type) {
-                    case 'offer':
+                    case 'offer': // Offer comes from 'initiator' (Cordova app) or 'streamer' (guest browser)
                         if (message.offer) {
                             updateConnectionStatus('connecting', 'Offer received. Processing...');
                             await handleOffer(message.offer);
-                            // Enable buttons once the stream is likely to be active
-                            if (peerConnection && peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                            if (peerConnection && (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed')) {
                                 document.getElementById('startClipButton').disabled = false;
                                 document.getElementById('screenshotButton').disabled = false;
                             }
@@ -431,12 +457,12 @@
                         }
                         break;
                     case 'hangup':
-                        console.log('Received hangup from initiator/server (viewer)');
-                        updateConnectionStatus('disconnected', 'Stream ended by initiator.');
+                        console.log(`Received hangup from ${message.origin || 'peer'}/server (${currentRole})`);
+                        updateConnectionStatus('disconnected', `Stream ended by ${message.origin || 'peer'}.`);
                         stopViewing(false);
                         break;
                     case 'pong':
-                        console.log('Received pong from server (viewer) - connection alive');
+                        console.log(`Received pong from server (${currentRole}) - connection alive`);
                         break;
                     case 'error':
                         updateConnectionStatus('disconnected', `Server error: ${message.message}`);
@@ -444,52 +470,60 @@
                         stopViewing(false);
                         break;
                     case 'session_not_found':
-                        updateConnectionStatus('disconnected', `Session ID ${currentSessionId} not found or initiator not connected.`);
-                        console.warn(`Session ${currentSessionId} not found or initiator not connected.`);
+                        updateConnectionStatus('disconnected', `Session ID ${currentSessionId} not found or initiator/streamer not connected.`);
+                        console.warn(`Session ${currentSessionId} not found or initiator/streamer not connected.`);
                         stopViewing(false);
+                        break;
+                    case 'streamer_connected': // Notification from server when streamer joins host's session
+                        if (currentRole === 'host') {
+                            updateConnectionStatus('connecting', 'Streamer has connected. Waiting for their video offer...');
+                            // Host doesn't send offer, it waits for streamer's offer.
+                        }
                         break;
                 }
             };
 
             websocket.onerror = (error) => {
-                console.error('WebSocket error (viewer):', error);
+                console.error(`WebSocket error (${currentRole}):`, error);
                 updateConnectionStatus('disconnected', 'WebSocket connection error. Please try again.');
                 stopViewing(false);
             };
 
             websocket.onclose = (event) => {
-                console.log('WebSocket connection closed (viewer):', event.reason, `Code: ${event.code}`);
+                console.log(`WebSocket connection closed (${currentRole}):`, event.reason, `Code: ${event.code}`);
                 if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
-                if (peerConnection && peerConnection.iceConnectionState !== 'closed') {
-                }
+                // updateConnectionStatus('disconnected', 'Disconnected from signaling server.'); // Already handled by stopViewing or specific error
             };
         }
 
-        async function joinStream() {
+        async function joinStream() { // Used by original viewer and host (after initiating)
             currentSessionId = document.getElementById('sessionIdInput').value.trim();
             if (!currentSessionId) {
                 alert('Please enter a Session ID.');
                 return;
             }
-            if (peerConnection && peerConnection.iceConnectionState !== 'closed' && peerConnection.iceConnectionState !== 'failed') {
-                alert('Already connected or attempting to connect. Please "Stop Viewing" first.');
-                return;
-            }
+            // if (peerConnection && peerConnection.iceConnectionState !== 'closed' && peerConnection.iceConnectionState !== 'failed') {
+            //     alert('Already connected or attempting to connect. Please "Stop Viewing" first.');
+            //     return;
+            // }
 
             if (websocket && websocket.readyState === WebSocket.OPEN) {
-                websocket.onclose = null;
-                websocket.close();
+                // If trying to join a new session, close the old one first.
+                // This is more relevant if the user manually changes session ID and clicks join again.
+                stopViewing(true); // Notify server about leaving old session
             }
+            // Ensure peerConnection is reset if joining a new stream
             if (peerConnection) {
                 peerConnection.close();
                 peerConnection = null;
             }
 
-            updateConnectionStatus('connecting', 'Attempting to join stream via WebSocket...');
+
+            updateConnectionStatus('connecting', `Attempting to join stream for session ${currentSessionId} as ${currentRole}...`);
             reconnectAttempts = 0;
             isReconnecting = false;
             
-            connectWebSocketAndJoin();
+            connectWebSocketAndJoin(); // This will register with the new currentSessionId and currentRole
         }
 
         async function handleOffer(offer) {
@@ -523,18 +557,18 @@
                 if (event.streams && event.streams[0]) {
                     updateVideoDebugInfo("Using stream from event.streams[0]");
                     remoteVideo.srcObject = event.streams[0];
-                    updateConnectionStatus('connected', 'Stream connected successfully!');
-                    reconnectAttempts = 0;
-                    isReconnecting = false;
+                    // updateConnectionStatus('connected', 'Stream connected successfully!'); // Moved to oniceconnectionstatechange
+                    // reconnectAttempts = 0;
+                    // isReconnecting = false;
                 } else if (event.track) {
                     updateVideoDebugInfo("No stream available, creating new MediaStream");
                     if (!remoteVideo.srcObject) {
                         remoteVideo.srcObject = new MediaStream();
                     }
                     remoteVideo.srcObject.addTrack(event.track);
-                    updateConnectionStatus('connected', 'Stream connected successfully!');
-                    reconnectAttempts = 0;
-                    isReconnecting = false;
+                    // updateConnectionStatus('connected', 'Stream connected successfully!'); // Moved to oniceconnectionstatechange
+                    // reconnectAttempts = 0;
+                    // isReconnecting = false;
                 }
 
                 // Enable controls once the track is received and video is playing
@@ -553,13 +587,16 @@
             };
 
             peerConnection.oniceconnectionstatechange = () => {
-                console.log(`ICE connection state (viewer): ${peerConnection.iceConnectionState}`);
+                console.log(`ICE connection state (${currentRole}): ${peerConnection.iceConnectionState}`);
                 updateVideoDebugInfo(`ICE connection state: ${peerConnection.iceConnectionState}`);
                 
                 if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
                     updateConnectionStatus('connected', 'Stream connected successfully!');
                     reconnectAttempts = 0;
                     isReconnecting = false;
+                    if (currentRole === 'host') { // Ensure host controls are visible and updated
+                        document.getElementById('hostControls').style.display = 'block';
+                    }
                 } else if (peerConnection.iceConnectionState === 'failed') {
                     updateConnectionStatus('disconnected', 'Stream connection failed.');
                     handleConnectionFailure();
@@ -571,7 +608,7 @@
             };
 
             peerConnection.onsignalingstatechange = () => {
-                console.log(`Signaling state (viewer): ${peerConnection.signalingState}`);
+                console.log(`Signaling state (${currentRole}): ${peerConnection.signalingState}`);
             };
 
             try {
@@ -605,14 +642,13 @@
             if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
                 updateConnectionStatus('connecting', `WebRTC connection failed. Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
                 
-                // Clear any existing timeout
                 if (reconnectTimeoutId) {
                     clearTimeout(reconnectTimeoutId);
                 }
                 
-                // Request ICE restart from initiator
-                sendSignalingMessage({ type: 'request_ice_restart' });
-                console.log("WebRTC connection failed. Viewer is requesting ICE restart.");
+                // Request ICE restart from initiator/streamer
+                sendSignalingMessage({ type: 'request_ice_restart' }); // Sent to 'initiator' or 'streamer'
+                console.log(`WebRTC connection failed. ${currentRole} is requesting ICE restart.`);
                 
                 // Set timeout for this reconnection attempt
                 reconnectTimeoutId = setTimeout(() => {
@@ -653,9 +689,9 @@
                 keepAliveIntervalId = null;
             }
 
-            if (notifyServer && websocket && websocket.readyState === WebSocket.OPEN) {
+            if (notifyServer && websocket && websocket.readyState === WebSocket.OPEN && currentSessionId) {
                 sendSignalingMessage({ type: 'hangup' });
-                console.log('Sent hangup message via WebSocket (viewer).');
+                console.log(`Sent hangup message via WebSocket (${currentRole}).`);
             }
 
             if (peerConnection) {
@@ -681,6 +717,13 @@
             document.getElementById('endClipButton').disabled = true;
             document.getElementById('screenshotButton').disabled = true;
             document.getElementById('clipStatus').textContent = '';
+
+            // For host, reset host UI elements if needed
+            if (currentRole === 'host') {
+                // document.getElementById('hostSessionInfo').innerHTML = ''; // Clear session info
+                // document.querySelector('.connection-controls').style.display = 'none'; // Hide viewer join
+            }
+
             if (mediaRecorder && mediaRecorder.state !== "inactive") {
                 mediaRecorder.stop();
             }
@@ -712,9 +755,9 @@
         // FR008 & FR010: Viewer Live Clipping and Media Controls
         function startClip() {
             const remoteVideo = document.getElementById('remoteVideo');
-            if (!remoteVideo.srcObject) {
-                alert('Stream not available to start clipping.');
-                updateVideoDebugInfo('Attempted to start clip, but no stream available.');
+            if (!remoteVideo.srcObject || remoteVideo.readyState < remoteVideo.HAVE_METADATA) { // Check readyState
+                alert('Stream not available or not ready to start clipping.');
+                updateVideoDebugInfo('Attempted to start clip, but no stream available or not ready.');
                 return;
             }
 
@@ -923,14 +966,16 @@
             
             if (!blob) {
                 const msg = 'No media data to upload.';
-                if (itemStatusElement) itemStatusElement.textContent = msg; else if (globalStatusElement) globalStatusElement.textContent = msg;
+                if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
+                else if (globalStatusElement) globalStatusElement.textContent = msg;
                 alert(msg);
                 console.error('Upload error: Blob is undefined for', fileName);
                 return false;
             }
             if (!sessionId) {
                 const msg = 'Session ID is missing. Cannot upload.';
-                if (itemStatusElement) itemStatusElement.textContent = msg; else if (globalStatusElement) globalStatusElement.textContent = msg;
+                 if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
+                else if (globalStatusElement) globalStatusElement.textContent = msg;
                 alert(msg);
                 console.error('Upload error: Session ID is missing.');
                 return false;
@@ -941,7 +986,7 @@
             formData.append('sessionId', sessionId);
             formData.append('fileName', fileName); 
 
-            if (itemStatusElement) itemStatusElement.textContent = `Uploading ${fileName}...`;
+            if (itemStatusElement) { itemStatusElement.textContent = `Uploading ${fileName}...`; itemStatusElement.className = 'media-item-status uploading'; }
             else if (globalStatusElement) globalStatusElement.textContent = `Uploading ${fileName}...`;
 
             try {
@@ -956,30 +1001,30 @@
                 if (response.ok) {
                     const result = JSON.parse(resultText); 
                     if (result.success) {
-                        const msg = `${fileName} uploaded.`; // Kept it short for item status
-                        if (itemStatusElement) itemStatusElement.textContent = msg; 
+                        const msg = `${fileName} uploaded.`;
+                        if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status uploaded'; }
                         else if (globalStatusElement) globalStatusElement.textContent = `${fileName} uploaded successfully!`;
-                        // alert(`${fileName} uploaded successfully!`); // Suppressed if itemStatusElement is used
                         console.log('Upload successful:', result.message);
                         return true;
                     } else {
                         const msg = `Upload failed: ${result.message || 'Unknown server error'}`;
-                        if (itemStatusElement) itemStatusElement.textContent = msg; else if (globalStatusElement) globalStatusElement.textContent = msg;
+                        if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
+                        else if (globalStatusElement) globalStatusElement.textContent = msg;
                         alert(`Upload failed for ${fileName}: ${result.message || 'Unknown server error'}`);
                         console.error('Upload failed:', result.message);
                         return false;
                     }
                 } else {
-                    const msg = `Server error: ${response.statusText}`; // Simplified for item status
-                    if (itemStatusElement) itemStatusElement.textContent = msg; 
+                    const msg = `Server error: ${response.statusText}`;
+                    if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
                     else if (globalStatusElement) globalStatusElement.textContent = `Upload failed for ${fileName}: ${response.statusText} - ${resultText}`;
                     alert(`Upload failed for ${fileName}: ${response.statusText} - ${resultText}`);
                     console.error('Upload server error:', response.status, response.statusText, resultText);
                     return false;
                 }
             } catch (error) {
-                const msg = `Error: ${error.message.substring(0,30)}${error.message.length > 30 ? '...' : '' }`; // Truncate long error for item status
-                if (itemStatusElement) itemStatusElement.textContent = msg;
+                const msg = `Error: ${error.message.substring(0,30)}${error.message.length > 30 ? '...' : '' }`;
+                if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
                 else if (globalStatusElement) globalStatusElement.textContent = `Error uploading ${fileName}: ${error.message}`;
                 alert(`Error uploading ${fileName}: ${error.message}`);
                 console.error('Upload fetch error:', error);
@@ -992,6 +1037,46 @@
                 }, 3000);
             }
         }
+
+        // --- New Host Functionality for FR012 ---
+        function generateUniqueId() {
+            return Math.random().toString(36).substring(2, 15);
+        }
+
+        function initiateHostSession() {
+            currentRole = 'host'; // Explicitly set role
+            currentSessionId = generateUniqueId();
+            document.getElementById('sessionIdInput').value = currentSessionId; // Populate for potential re-join
+            
+            const hostSessionInfoDiv = document.getElementById('hostSessionInfo');
+            const baseAppUrl = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
+            const streamerLink = `${baseAppUrl}/stream.html?sessionId=${currentSessionId}`;
+            
+            hostSessionInfoDiv.innerHTML = 
+                `New Session ID: <strong>${currentSessionId}</strong><br>` +
+                `Share this link with the guest streamer: <input type="text" value="${streamerLink}" id="streamerLinkInput" readonly style="width:80%; margin:5px 0;">` +
+                `<button onclick="copyLink('streamerLinkInput')">Copy Link</button><br>` +
+                `Waiting for streamer to connect...`;
+
+            document.querySelector('.connection-controls').style.display = 'block'; // Show connection controls for host to "join" their own session as viewer
+            document.getElementById('hostControls').style.display = 'block';
+
+            // Automatically "join" the stream as host to listen for the streamer
+            joinStream(); 
+        }
+
+        function copyLink(inputId) {
+            const inputElement = document.getElementById(inputId);
+            inputElement.select();
+            inputElement.setSelectionRange(0, 99999); // For mobile devices
+            try {
+                document.execCommand('copy');
+                alert('Link copied to clipboard!');
+            } catch (err) {
+                alert('Failed to copy link. Please copy it manually.');
+            }
+        }
+
     </script>
 </body>
 </html>

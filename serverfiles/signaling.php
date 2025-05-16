@@ -23,7 +23,7 @@ use Ratchet\WebSocket\WsServer;
 
 class SignalingServer implements MessageComponentInterface {
     protected $clients;
-    private $sessions; // [sessionId => [peerType => connection, ...]]
+    private $sessions; // [sessionId => [peerType => connection, 'initiator_offer' => offerData, 'streamer_offer' => offerData, 'viewers' => SplObjectStorage]]
 
     public function __construct() {
         $this->clients = new \SplObjectStorage;
@@ -56,92 +56,134 @@ class SignalingServer implements MessageComponentInterface {
                     $from->send(json_encode(['type' => 'error', 'message' => 'SessionId and peerType required for registration.']));
                     return;
                 }
-                $peerType = $data['peerType']; // 'initiator' or 'viewer'
+                $peerType = $data['peerType']; // 'initiator', 'viewer', 'host', 'streamer'
                 
                 if (!isset($this->sessions[$sessionId])) {
                     $this->sessions[$sessionId] = [];
                 }
-                $this->sessions[$sessionId][$peerType] = $from;
-                // Store peerType on the connection object itself for easier lookup on close/error
+
+                if ($peerType === 'viewer') {
+                    if (!isset($this->sessions[$sessionId]['viewers'])) {
+                        $this->sessions[$sessionId]['viewers'] = new \SplObjectStorage();
+                    }
+                    $this->sessions[$sessionId]['viewers']->attach($from);
+                } else {
+                    if (isset($this->sessions[$sessionId][$peerType])) {
+                        echo "Warning: Overwriting existing {$peerType} for session {$sessionId}\n";
+                        // Consider notifying the old connection
+                        // $this->sessions[$sessionId][$peerType]->send(json_encode(['type'=>'replaced']));
+                        // $this->sessions[$sessionId][$peerType]->close();
+                    }
+                    $this->sessions[$sessionId][$peerType] = $from;
+                }
+
                 $from->sessionId = $sessionId;
                 $from->peerType = $peerType;
 
                 echo "Registered peer {$peerType} for session {$sessionId} (Conn: {$from->resourceId})\n";
                 $from->send(json_encode(['type' => 'registered', 'sessionId' => $sessionId, 'peerType' => $peerType]));
 
-                // If viewer registers and initiator has already sent an offer, forward it.
-                // This part is simplified; a more robust solution might queue offers.
-                if ($peerType === 'viewer' && isset($this->sessions[$sessionId]['initiator_offer'])) {
-                    $offerData = $this->sessions[$sessionId]['initiator_offer'];
-                    echo "Forwarding stored offer to viewer for session {$sessionId}\n";
-                    $from->send(json_encode($offerData));
-                    // unset($this->sessions[$sessionId]['initiator_offer']); // Clear after sending
+                // Forward stored offers or notify relevant parties
+                if ($peerType === 'host' && isset($this->sessions[$sessionId]['streamer_offer'])) {
+                    $from->send(json_encode($this->sessions[$sessionId]['streamer_offer']));
+                    echo "Forwarded stored streamer_offer to new host for session {$sessionId}\n";
+                } elseif ($peerType === 'viewer' && isset($this->sessions[$sessionId]['initiator_offer'])) {
+                    $from->send(json_encode($this->sessions[$sessionId]['initiator_offer']));
+                    echo "Forwarded stored initiator_offer to new viewer for session {$sessionId}\n";
+                } elseif ($peerType === 'streamer' && isset($this->sessions[$sessionId]['host'])) {
+                    $this->sessions[$sessionId]['host']->send(json_encode(['type' => 'streamer_connected', 'sessionId' => $sessionId]));
+                    echo "Notified host about streamer connection for session {$sessionId}\n";
                 }
-                // If initiator registers and viewer is waiting for offer (less common flow here)
-                // Or if both are registered, initiator can now send offer.
                 break;
 
             case 'offer':
-                if (!$sessionId || !isset($data['offer'])) {
-                     $from->send(json_encode(['type' => 'error', 'message' => 'SessionId and offer data required.'])); return;
+                if (!$sessionId || !isset($data['offer']) || !isset($data['origin'])) {
+                     $from->send(json_encode(['type' => 'error', 'message' => 'SessionId, offer data, and origin required.'])); return;
                 }
-                echo "Received offer for session {$sessionId} from initiator (Conn: {$from->resourceId})\n";
-                // Store offer in case viewer is not yet connected or ready
-                // $this->sessions[$sessionId]['initiator_offer'] = $data;
+                $originPeerType = $data['origin']; // 'initiator' or 'streamer'
+                echo "Received offer for session {$sessionId} from {$originPeerType} (Conn: {$from->resourceId})\n";
 
-                // Forward to viewer if connected
-                if (isset($this->sessions[$sessionId]['viewer'])) {
-                    $viewerConn = $this->sessions[$sessionId]['viewer'];
-                    echo "Forwarding offer to viewer (Conn: {$viewerConn->resourceId}) for session {$sessionId}\n";
-                    $viewerConn->send($msg); // Forward the original message
+                if ($originPeerType === 'initiator') {
+                    $this->sessions[$sessionId]['initiator_offer'] = $data;
+                    if (isset($this->sessions[$sessionId]['viewers'])) {
+                        foreach ($this->sessions[$sessionId]['viewers'] as $viewerConn) {
+                            $viewerConn->send($msg);
+                        }
+                        echo "Forwarded initiator_offer to " . $this->sessions[$sessionId]['viewers']->count() . " viewer(s) for session {$sessionId}\n";
+                    } else {
+                        echo "No viewers for session {$sessionId}. Storing initiator_offer.\n";
+                    }
+                } elseif ($originPeerType === 'streamer') {
+                    $this->sessions[$sessionId]['streamer_offer'] = $data;
+                    if (isset($this->sessions[$sessionId]['host'])) {
+                        $this->sessions[$sessionId]['host']->send($msg);
+                        echo "Forwarded streamer_offer to host for session {$sessionId}\n";
+                    } else {
+                        echo "Host not connected for session {$sessionId}. Storing streamer_offer.\n";
+                    }
                 } else {
-                    echo "Viewer not yet connected for session {$sessionId}. Storing offer.\n";
-                    // Store the offer if viewer isn't there yet.
-                    // This simple example assumes initiator sends offer after viewer might have registered.
-                    // A more robust system would handle offer queuing better.
-                    $this->sessions[$sessionId]['initiator_offer'] = $data; // Store the full message
-                    $from->send(json_encode(['type' => 'info', 'message' => 'Offer received, waiting for viewer.']));
+                    $from->send(json_encode(['type' => 'error', 'message' => 'Invalid origin for offer.']));
                 }
                 break;
 
-            case 'answer':
-            case 'candidate':
+            case 'answer': 
+            case 'candidate': 
             case 'hangup':
-            case 'ping': // Client sends ping, server sends pong back to that client
-                if (!$sessionId) {
-                    $from->send(json_encode(['type' => 'error', 'message' => 'SessionId required for message type ' . $data['type']]));
+                if (!$sessionId || !isset($data['origin'])) {
+                    $from->send(json_encode(['type' => 'error', 'message' => 'SessionId and origin required for ' . $data['type']]));
                     return;
                 }
-                
-                $originPeerType = $from->peerType ?? ($data['origin'] ?? null); // 'initiator' or 'viewer'
-                if (!$originPeerType) {
-                     $from->send(json_encode(['type' => 'error', 'message' => 'Cannot determine origin peer type.'])); return;
+                $originPeerType = $data['origin'];
+                $targetPeerType = null;
+
+                if ($originPeerType === 'initiator') $targetPeerType = 'viewers';
+                else if ($originPeerType === 'viewer') $targetPeerType = 'initiator';
+                else if ($originPeerType === 'streamer') $targetPeerType = 'host';
+                else if ($originPeerType === 'host') $targetPeerType = 'streamer';
+
+                if (!$targetPeerType) {
+                    $from->send(json_encode(['type' => 'error', 'message' => 'Cannot determine target for origin ' . $originPeerType]));
+                    return;
                 }
 
-                $targetPeerType = ($originPeerType === 'initiator') ? 'viewer' : 'initiator';
-
-                if (isset($this->sessions[$sessionId][$targetPeerType])) {
-                    $targetConn = $this->sessions[$sessionId][$targetPeerType];
-                    if ($data['type'] === 'ping') {
-                        echo "Received ping from {$originPeerType} (Conn: {$from->resourceId}), session {$sessionId}. Sending pong.\n";
-                        $from->send(json_encode(['type' => 'pong', 'sessionId' => $sessionId]));
+                if ($targetPeerType === 'viewers') {
+                    if (isset($this->sessions[$sessionId]['viewers']) && $this->sessions[$sessionId]['viewers']->count() > 0) {
+                        echo "Forwarding {$data['type']} from {$originPeerType} to viewers for session {$sessionId}\n";
+                        foreach ($this->sessions[$sessionId]['viewers'] as $viewerConn) {
+                            if ($viewerConn !== $from) $viewerConn->send($msg);
+                        }
                     } else {
-                        echo "Forwarding {$data['type']} from {$originPeerType} to {$targetPeerType} for session {$sessionId}\n";
-                        $targetConn->send($msg); // Forward the original message
+                        echo "No viewers to forward {$data['type']} in session {$sessionId}\n";
                     }
+                } elseif (isset($this->sessions[$sessionId][$targetPeerType])) {
+                    $targetConn = $this->sessions[$sessionId][$targetPeerType];
+                    echo "Forwarding {$data['type']} from {$originPeerType} to {$targetPeerType} for session {$sessionId}\n";
+                    $targetConn->send($msg);
                 } else {
-                    echo "Target peer {$targetPeerType} not found for session {$sessionId} to forward {$data['type']}\n";
-                    if ($data['type'] !== 'ping') { // Don't send error for ping if target is missing
-                        $from->send(json_encode(['type' => 'error', 'message' => "Peer {$targetPeerType} not connected for session {$sessionId}"]));
+                    echo "Target {$targetPeerType} not found for session {$sessionId} to forward {$data['type']}\n";
+                    if ($data['type'] !== 'hangup') { // Avoid erroring on hangup if target already gone
+                       // $from->send(json_encode(['type' => 'error', 'message' => "Peer {$targetPeerType} not connected."]));
                     }
                 }
                 break;
             
-            case 'request_ice_restart': // Viewer requests initiator to restart ICE
-                 if (!$sessionId) { $from->send(json_encode(['type' => 'error', 'message' => 'SessionId required.'])); return; }
-                 if (isset($this->sessions[$sessionId]['initiator'])) {
-                    echo "Viewer requested ICE restart for session {$sessionId}. Notifying initiator.\n";
-                    $this->sessions[$sessionId]['initiator']->send(json_encode(['type' => 'ice_restart_request', 'sessionId' => $sessionId]));
+            case 'ping':
+                if (!$sessionId) { $from->send(json_encode(['type' => 'error', 'message' => 'SessionId required for ping.'])); return; }
+                $from->send(json_encode(['type' => 'pong', 'sessionId' => $sessionId]));
+                break;
+
+            case 'request_ice_restart':
+                 if (!$sessionId || !isset($data['origin'])) { $from->send(json_encode(['type' => 'error', 'message' => 'SessionId and origin required for ICE restart.'])); return; }
+                 $originPeerType = $data['origin']; 
+                 $targetPeerType = null;
+                 if ($originPeerType === 'viewer') $targetPeerType = 'initiator';
+                 else if ($originPeerType === 'host') $targetPeerType = 'streamer';
+
+                 if ($targetPeerType && isset($this->sessions[$sessionId][$targetPeerType])) {
+                    echo "{$originPeerType} requested ICE restart. Notifying {$targetPeerType} in session {$sessionId}.\n";
+                    $this->sessions[$sessionId][$targetPeerType]->send(json_encode(['type' => 'ice_restart_request', 'sessionId' => $sessionId]));
+                 } else {
+                    echo "Cannot process ICE restart: origin {$originPeerType}, target {$targetPeerType} invalid or not found for session {$sessionId}.\n";
                  }
                 break;
 
@@ -156,51 +198,76 @@ class SignalingServer implements MessageComponentInterface {
         $this->clients->detach($conn);
         echo "Connection {$conn->resourceId} has disconnected\n";
 
-        // Clean up session data for this connection
         $sessionId = $conn->sessionId ?? null;
         $peerType = $conn->peerType ?? null;
 
-        if ($sessionId && $peerType && isset($this->sessions[$sessionId][$peerType])) {
-            if ($this->sessions[$sessionId][$peerType] === $conn) {
+        if ($sessionId && $peerType) {
+            $notifyMessage = json_encode([
+                'type' => 'peer_disconnected',
+                'sessionId' => $sessionId,
+                'peerType' => $peerType
+            ]);
+
+            if ($peerType === 'viewer' && isset($this->sessions[$sessionId]['viewers'])) {
+                $this->sessions[$sessionId]['viewers']->detach($conn);
+                echo "Unregistered viewer for session {$sessionId}\n";
+                if ($this->sessions[$sessionId]['viewers']->count() === 0) {
+                    unset($this->sessions[$sessionId]['viewers']);
+                }
+                if (isset($this->sessions[$sessionId]['initiator'])) {
+                    $this->sessions[$sessionId]['initiator']->send($notifyMessage);
+                }
+            } elseif (isset($this->sessions[$sessionId][$peerType]) && $this->sessions[$sessionId][$peerType] === $conn) {
                 unset($this->sessions[$sessionId][$peerType]);
                 echo "Unregistered {$peerType} for session {$sessionId}\n";
+                // Notify the other relevant peer
+                $otherPeer = null;
+                if ($peerType === 'initiator' && isset($this->sessions[$sessionId]['viewers'])) {
+                    foreach($this->sessions[$sessionId]['viewers'] as $viewer) $viewer->send($notifyMessage);
+                } elseif ($peerType === 'host' && isset($this->sessions[$sessionId]['streamer'])) {
+                    $this->sessions[$sessionId]['streamer']->send($notifyMessage);
+                } elseif ($peerType === 'streamer' && isset($this->sessions[$sessionId]['host'])) {
+                    $this->sessions[$sessionId]['host']->send($notifyMessage);
+                }
+            }
 
-                // Notify the other peer if they are still connected
-                $otherPeerType = ($peerType === 'initiator') ? 'viewer' : 'initiator';
-                if (isset($this->sessions[$sessionId][$otherPeerType])) {
-                    $this->sessions[$sessionId][$otherPeerType]->send(json_encode([
-                        'type' => 'peer_disconnected',
-                        'sessionId' => $sessionId,
-                        'peerType' => $peerType
-                    ]));
-                    echo "Notified {$otherPeerType} about {$peerType} disconnection in session {$sessionId}\n";
-                }
+            // Clear relevant offer if the offerer disconnects
+            if ($peerType === 'initiator' && isset($this->sessions[$sessionId]['initiator_offer'])) {
+                unset($this->sessions[$sessionId]['initiator_offer']);
+            }
+            if ($peerType === 'streamer' && isset($this->sessions[$sessionId]['streamer_offer'])) {
+                unset($this->sessions[$sessionId]['streamer_offer']);
+            }
 
-                if (empty($this->sessions[$sessionId])) {
-                    unset($this->sessions[$sessionId]);
-                    echo "Session {$sessionId} closed as no peers are left.\n";
-                }
-                 // If initiator disconnects, clear any stored offer
-                if ($peerType === 'initiator' && isset($this->sessions[$sessionId]['initiator_offer'])) {
-                    unset($this->sessions[$sessionId]['initiator_offer']);
-                }
+            // Check if session is empty and can be removed
+            $activePeersInSession = false;
+            foreach (['initiator', 'host', 'streamer'] as $pt) {
+                if (isset($this->sessions[$sessionId][$pt])) $activePeersInSession = true;
+            }
+            if (isset($this->sessions[$sessionId]['viewers']) && $this->sessions[$sessionId]['viewers']->count() > 0) {
+                $activePeersInSession = true;
+            }
+            if (!$activePeersInSession && isset($this->sessions[$sessionId])) {
+                unset($this->sessions[$sessionId]);
+                echo "Session {$sessionId} closed.\n";
             }
         }
     }
 
     public function onError(ConnectionInterface $conn, \Exception $e) {
-        echo "An error has occurred: {$e->getMessage()}\n";
-        // Log detailed error: $e->getTraceAsString()
-
-        // Clean up session data for this connection as onError might be followed by onClose or might not.
+        echo "Error on connection {$conn->resourceId}: {$e->getMessage()}\n";
+        // Potentially log $e->getTraceAsString();
+        // Perform similar cleanup as onClose, but be cautious as state might be inconsistent
         $sessionId = $conn->sessionId ?? null;
         $peerType = $conn->peerType ?? null;
-        if ($sessionId && $peerType && isset($this->sessions[$sessionId][$peerType])) {
-             if ($this->sessions[$sessionId][$peerType] === $conn) {
+        if ($sessionId && $peerType) {
+            if ($peerType === 'viewer' && isset($this->sessions[$sessionId]['viewers'])) {
+                $this->sessions[$sessionId]['viewers']->detach($conn);
+            } elseif (isset($this->sessions[$sessionId][$peerType]) && $this->sessions[$sessionId][$peerType] === $conn) {
                 unset($this->sessions[$sessionId][$peerType]);
-                // Notify other peer if possible
-             }
+            }
         }
+        $this->clients->detach($conn); // Ensure client is detached on error too
         $conn->close();
     }
 }

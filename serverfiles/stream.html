@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guest Streamer</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        #container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        video { width: 100%; max-width: 600px; border: 1px solid #ddd; background-color: #000; }
+        button { padding: 10px 15px; margin-top: 10px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; }
+        #status { margin-top: 15px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>Stream Your Camera</h1>
+        <p>Your camera feed will be streamed to the host.</p>
+        <video id="localVideo" autoplay playsinline muted></video>
+        <button id="startStreamBtn">Start Streaming</button>
+        <button id="stopStreamBtn" disabled>Stop Streaming</button>
+        <div id="status">Initializing...</div>
+    </div>
+
+    <script src="PRIVATE_URL.JS"></script>
+    <script>
+        let localStream;
+        let peerConnection;
+        let websocket;
+        let sessionId;
+        let keepAliveIntervalId;
+        let iceCandidateBuffer = [];
+        let answerReceived = false; // Though this page sends offer, we might adapt variable names
+
+        const peerConnectionConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
+            ],
+            iceCandidatePoolSize: 10
+        };
+
+        const statusDiv = document.getElementById('status');
+        const startStreamBtn = document.getElementById('startStreamBtn');
+        const stopStreamBtn = document.getElementById('stopStreamBtn');
+        const localVideo = document.getElementById('localVideo');
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            sessionId = urlParams.get('sessionId');
+
+            if (!sessionId) {
+                statusDiv.textContent = 'Error: Session ID is missing in the URL.';
+                alert('Session ID is missing. This page should be opened via a link from the host.');
+                startStreamBtn.disabled = true;
+                return;
+            }
+            statusDiv.textContent = `Ready to stream to session: ${sessionId}`;
+            startStreamBtn.onclick = startStreaming;
+            stopStreamBtn.onclick = stopStreaming;
+        });
+
+        async function startStreaming() {
+            startStreamBtn.disabled = true;
+            stopStreamBtn.disabled = true;
+            statusDiv.textContent = 'Starting stream...';
+            try {
+                await initializeMediaStream();
+                connectWebSocket(() => {
+                    setupPeerConnection();
+                });
+            } catch (error) {
+                console.error('Error starting stream:', error);
+                statusDiv.textContent = `Error: ${error.message}`;
+                alert(`Error starting stream: ${error.message}`);
+                startStreamBtn.disabled = false;
+                stopStreamBtn.disabled = true;
+            }
+        }
+
+        function stopStreaming(notifyServer = true) {
+            statusDiv.textContent = 'Stopping stream...';
+            if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+            if (notifyServer && websocket && websocket.readyState === WebSocket.OPEN) {
+                sendSignalingMessage({ type: 'hangup' });
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (websocket) {
+                websocket.onclose = null;
+                websocket.close();
+                websocket = null;
+            }
+            localVideo.srcObject = null;
+            startStreamBtn.disabled = false;
+            stopStreamBtn.disabled = true;
+            statusDiv.textContent = 'Stream stopped.';
+            iceCandidateBuffer = [];
+            answerReceived = false;
+        }
+
+        async function initializeMediaStream() {
+            try {
+                // Prefer front camera, but fallback if not available
+                const constraints = {
+                    video: { facingMode: { ideal: 'user' } },
+                    audio: true
+                };
+                localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                if (!localStream || !localStream.getVideoTracks().length) {
+                    throw new Error('No video track found.');
+                }
+                localVideo.srcObject = localStream;
+                statusDiv.textContent = 'Camera and microphone accessed.';
+                stopStreamBtn.disabled = false;
+            } catch (error) {
+                console.error('Error accessing media devices.', error);
+                statusDiv.textContent = 'Camera/mic error: ' + error.message;
+                alert('Camera/mic error: ' + error.message);
+                stopStreaming(false);
+                throw new Error('Could not access camera/microphone: ' + error.message);
+            }
+        }
+
+        function connectWebSocket(onOpenCallback) {
+            if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
+                if (websocket.readyState === WebSocket.OPEN && typeof onOpenCallback === 'function') {
+                    onOpenCallback();
+                }
+                return;
+            }
+
+            websocket = new WebSocket(window.WEBSOCKET_SIGNALING_URL);
+
+            websocket.onopen = () => {
+                console.log('WebSocket connection established (streamer).');
+                statusDiv.textContent = 'Signaling server connected.';
+                websocket.send(JSON.stringify({
+                    type: 'register',
+                    sessionId: sessionId,
+                    peerType: 'streamer' // New peerType for guest streamer
+                }));
+
+                if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+                keepAliveIntervalId = setInterval(() => {
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        sendSignalingMessage({ type: 'ping' });
+                    }
+                }, 25000);
+
+                if (typeof onOpenCallback === 'function') {
+                    onOpenCallback();
+                }
+            };
+
+            websocket.onmessage = async (event) => {
+                const message = JSON.parse(event.data);
+                console.log('Received WebSocket message (streamer):', message);
+
+                switch (message.type) {
+                    case 'answer':
+                        if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
+                            try {
+                                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+                                console.log('Remote description (answer) set successfully.');
+                                answerReceived = true;
+                                iceCandidateBuffer.forEach(candidate => sendSignalingMessage({ type: 'candidate', candidate }));
+                                iceCandidateBuffer = [];
+                            } catch (error) {
+                                console.error('Error setting remote description (answer):', error);
+                                statusDiv.textContent = 'Error setting up connection with host.';
+                            }
+                        }
+                        break;
+                    case 'candidate':
+                        if (peerConnection && message.candidate && peerConnection.remoteDescription) {
+                            try {
+                                await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                            } catch (e) {
+                                console.error('Error adding received ICE candidate (streamer):', e);
+                            }
+                        } else if (peerConnection && message.candidate) {
+                            // Buffer if remote description not set yet (should be rare if answer comes first)
+                            iceCandidateBuffer.push(message.candidate);
+                        }
+                        break;
+                    case 'hangup':
+                        statusDiv.textContent = 'Host ended the session.';
+                        stopStreaming(false);
+                        break;
+                    case 'pong':
+                        console.log('Pong received (streamer)');
+                        break;
+                    case 'error':
+                        console.error('Signaling server error:', message.message);
+                        statusDiv.textContent = `Signaling error: ${message.message}`;
+                        break;
+                    case 'peer_disconnected':
+                        if (message.peerType === 'host') {
+                            statusDiv.textContent = 'Host has disconnected.';
+                            stopStreaming(false);
+                        }
+                        break;
+                }
+            };
+
+            websocket.onerror = (error) => {
+                console.error('WebSocket error (streamer):', error);
+                statusDiv.textContent = 'WebSocket connection error.';
+                stopStreaming(false);
+            };
+
+            websocket.onclose = (event) => {
+                console.log('WebSocket connection closed (streamer):', event.reason, `Code: ${event.code}`);
+                if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
+                statusDiv.textContent = 'Disconnected from signaling server.';
+                stopStreamBtn.disabled = true;
+                startStreamBtn.disabled = sessionId ? false : true;
+            };
+        }
+
+        function sendSignalingMessage(message) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                message.sessionId = sessionId;
+                message.origin = 'streamer'; // This client is the streamer
+                websocket.send(JSON.stringify(message));
+                return true;
+            }
+            console.error('WebSocket not connected. Cannot send message:', message.type);
+            return false;
+        }
+
+        function setupPeerConnection() {
+            if (peerConnection) {
+                peerConnection.close();
+            }
+            peerConnection = new RTCPeerConnection(peerConnectionConfig);
+            answerReceived = false;
+            iceCandidateBuffer = [];
+
+            if (!localStream) {
+                statusDiv.textContent = 'Error: Camera stream not available for connection.';
+                alert('Error: Camera stream not available. Please ensure camera access.');
+                startStreamBtn.disabled = false;
+                stopStreamBtn.disabled = true;
+                return;
+            }
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    if (answerReceived) { // Only send if answer has been processed
+                        sendSignalingMessage({ type: 'candidate', candidate: event.candidate });
+                    } else {
+                        iceCandidateBuffer.push(event.candidate); // Buffer if answer not yet received
+                    }
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log(`ICE connection state (streamer): ${peerConnection.iceConnectionState}`);
+                statusDiv.textContent = `Connection state: ${peerConnection.iceConnectionState}`;
+                if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
+                    statusDiv.textContent = 'Stream connected to host!';
+                    stopStreamBtn.disabled = false;
+                    startStreamBtn.disabled = true;
+                } else if (peerConnection.iceConnectionState === 'failed') {
+                    statusDiv.textContent = 'Connection failed. Attempting ICE restart.';
+                    peerConnection.createOffer({ iceRestart: true })
+                        .then(offer => peerConnection.setLocalDescription(offer))
+                        .then(() => sendSignalingMessage({ type: 'offer', offer: peerConnection.localDescription }))
+                        .catch(e => console.error("ICE restart offer failed", e));
+                } else if (peerConnection.iceConnectionState === 'closed') {
+                    statusDiv.textContent = 'Stream connection closed.';
+                    stopStreaming(false);
+                }
+            };
+            
+            createAndSendOffer();
+        }
+
+        async function createAndSendOffer() {
+            try {
+                if (!peerConnection) throw new Error("PeerConnection does not exist.");
+                const offer = await peerConnection.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+                await peerConnection.setLocalDescription(offer);
+                
+                statusDiv.textContent = 'Sending stream offer to host...';
+                if (!sendSignalingMessage({ type: 'offer', offer: offer })) {
+                     statusDiv.textContent = 'Failed to send offer: WebSocket not ready.';
+                     throw new Error('WebSocket not ready for offer.');
+                }
+            } catch (error) {
+                console.error('Error creating or sending offer (streamer):', error);
+                statusDiv.textContent = `Error creating offer: ${error.message}`;
+                alert(`Error creating offer: ${error.message}`);
+                stopStreaming(false);
+            }
+        }
+    </script>
+</body>
+</html>
