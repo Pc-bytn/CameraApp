@@ -1,17 +1,55 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Guest Streamer</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
-        #container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        video { width: 100%; max-width: 600px; border: 1px solid #ddd; background-color: #000; }
-        button { padding: 10px 15px; margin-top: 10px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
-        button:hover { background-color: #0056b3; }
-        button:disabled { background-color: #ccc; }
-        #status { margin-top: 15px; font-weight: bold; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+
+        #container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        video {
+            width: 100%;
+            max-width: 600px;
+            border: 1px solid #ddd;
+            background-color: #000;
+        }
+
+        button {
+            padding: 10px 15px;
+            margin-top: 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+        }
+
+        #status {
+            margin-top: 15px;
+            font-weight: bold;
+        }
+
         #switch-cam-btn {
             margin-left: 10px;
             background: #007bff;
@@ -26,11 +64,13 @@
             vertical-align: middle;
             cursor: pointer;
         }
+
         #switch-cam-btn:hover {
             background-color: #0056b3;
         }
     </style>
 </head>
+
 <body>
     <div id="container">
         <h1>Stream Your Camera</h1>
@@ -41,9 +81,12 @@
             <button id="stopStreamBtn" disabled>Stop Streaming</button>
             <button id="switch-cam-btn" title="Switch Camera">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M17 17v2a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-2" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M8 12l-3-3m0 0l3-3m-3 3h16" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" stroke="#fff" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M17 17v2a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-2" stroke="#fff" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M8 12l-3-3m0 0l3-3m-3 3h16" stroke="#fff" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round" />
                 </svg>
             </button>
         </div>
@@ -90,14 +133,16 @@
             }
             statusDiv.textContent = `Ready to stream to session: ${sessionId}`;
             startStreamBtn.onclick = startStreaming;
-            stopStreamBtn.onclick = stopStreaming;            switchCamBtn.onclick = switchCamera;
-        });        async function startCameraPreview() {
+            stopStreamBtn.onclick = stopStreaming; switchCamBtn.onclick = switchCamera;
+        });
+
+        async function startCameraPreview() {
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
             }
             try {
                 localStream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: currentFacingMode },
+                    video: { facingMode: { ideal: currentFacingMode } },
                     audio: true
                 });
                 localVideo.srcObject = localStream;
@@ -339,7 +384,7 @@
                     stopStreaming(false);
                 }
             };
-            
+
             createAndSendOffer();
         }
 
@@ -348,11 +393,11 @@
                 if (!peerConnection) throw new Error("PeerConnection does not exist.");
                 const offer = await peerConnection.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
                 await peerConnection.setLocalDescription(offer);
-                
+
                 statusDiv.textContent = 'Sending stream offer to host...';
                 if (!sendSignalingMessage({ type: 'offer', offer: offer })) {
-                     statusDiv.textContent = 'Failed to send offer: WebSocket not ready.';
-                     throw new Error('WebSocket not ready for offer.');
+                    statusDiv.textContent = 'Failed to send offer: WebSocket not ready.';
+                    throw new Error('WebSocket not ready for offer.');
                 }
             } catch (error) {
                 console.error('Error creating or sending offer (streamer):', error);
@@ -360,79 +405,77 @@
                 alert(`Error creating offer: ${error.message}`);
                 stopStreaming(false);
             }
-        }        async function switchCamera() {
+        }
+
+        let videoDevices = [];
+        let currentDeviceIndex = 0;
+
+        async function switchCamera() {
             if (!localStream) {
                 console.warn('No local stream available to switch camera.');
                 return;
             }
 
-            const currentTrack = localStream.getVideoTracks()[0];
-            const isFrontCamera = currentTrack.getSettings().facingMode === 'user';
-
-            // Use ideal constraint instead of exact for better compatibility
-            const newFacingMode = isFrontCamera ? { ideal: 'environment' } : { ideal: 'user' };
-            
+            if (switchCamera.isRunning) {
+                console.log('Camera switch already in progress. Please wait.');
+                return;
+            }
+            switchCamera.isRunning = true;
             try {
-                // Stop the current video track
-                currentTrack.stop();
+                // On first run, enumerate all video-input devices
+                if (videoDevices.length === 0) {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    videoDevices = devices
+                        .filter(d => d.kind === 'videoinput')
+                        .map(d => d.deviceId);
 
-                // Get a new stream with the desired facing mode
+                    // Figure out which one we're currently using
+                    const currentTrack = localStream.getVideoTracks()[0];
+                    const settings = currentTrack.getSettings();
+                    const idx = videoDevices.indexOf(settings.deviceId);
+                    if (idx >= 0) currentDeviceIndex = idx;
+                }
+
+                // Advance to the next camera in the list
+                currentDeviceIndex = (currentDeviceIndex + 1) % videoDevices.length;
+                const nextDeviceId = videoDevices[currentDeviceIndex];
+                console.log(`Switching to camera deviceId=${nextDeviceId}`);
+
+                // Stop old track
+                const oldTrack = localStream.getVideoTracks()[0];
+                oldTrack.stop();
+                localStream.removeTrack(oldTrack);
+
+                // Grab the new track
                 const newStream = await navigator.mediaDevices.getUserMedia({
-                    video: newFacingMode,
+                    video: { deviceId: { exact: nextDeviceId } },
                     audio: true
                 });
-
-                // Replace the old track with the new track in the existing stream
-                localStream.removeTrack(currentTrack);
-                newStream.getVideoTracks().forEach(track => localStream.addTrack(track));
-
-                // Update the video element source
+                const newTrack = newStream.getVideoTracks()[0];
+                localStream.addTrack(newTrack);
                 localVideo.srcObject = localStream;
 
-                // Notify the peer connection about the new track
-                if (peerConnection && peerConnection.getSenders().length > 0) {
-                    const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+                // Update PeerConnection
+                if (peerConnection) {
+                    const sender = peerConnection.getSenders()
+                        .find(s => s.track.kind === 'video');
                     if (sender) {
-                        await sender.replaceTrack(localStream.getVideoTracks()[0]);
+                        await sender.replaceTrack(newTrack);
                     }
                 }
 
-                console.log(`Switched camera to ${isFrontCamera ? 'back' : 'front'} camera.`);
-                statusDiv.textContent = `Using ${isFrontCamera ? 'back' : 'front'} camera.`;            } catch (error) {
-                console.error('Error switching camera:', error);
-                statusDiv.textContent = 'Error switching camera: ' + error.message;
-                alert('Error switching camera: ' + error.message);
-                
-                // Fallback to default video constraints if facing mode fails
-                try {
-                    console.log('Attempting fallback to default camera...');
-                    const fallbackStream = await navigator.mediaDevices.getUserMedia({
-                        video: true,
-                        audio: true
-                    });
-                    
-                    // Replace tracks in local stream
-                    localStream.removeTrack(currentTrack);
-                    fallbackStream.getVideoTracks().forEach(track => localStream.addTrack(track));
-                    
-                    // Update the video element
-                    localVideo.srcObject = localStream;
-                    
-                    // Update peer connection if active
-                    if (peerConnection && peerConnection.getSenders().length > 0) {
-                        const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
-                        if (sender) {
-                            await sender.replaceTrack(localStream.getVideoTracks()[0]);
-                            console.log('Replaced video track in peer connection with fallback camera');
-                        }
-                    }
-                } catch (fallbackError) {
-                    console.error('Fallback camera also failed:', fallbackError);
-                    statusDiv.textContent = 'Could not switch camera. Please try again later.';
-                    alert('Failed to switch camera. Your device may not support this feature.');
-                }
+                statusDiv.textContent = `Using camera ${currentDeviceIndex + 1} of ${videoDevices.length}`;
+                console.log(`Switched to device ${nextDeviceId}`);
+            } catch (err) {
+                console.error('Error during camera switch:', err);
+                statusDiv.textContent = 'Error switching camera: ' + err.message;
+                alert('Error switching camera: ' + err.message);
+            } finally {
+                switchCamera.isRunning = false;
             }
         }
+
     </script>
 </body>
+
 </html>
