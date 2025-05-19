@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Stream Viewer</title>    <style>
+    <title>Stream Viewer</title>    <style>
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; 
@@ -415,7 +415,7 @@
                 console.log(`Received WebSocket message (${currentRole}):`, message);
 
                 switch (message.type) {
-                    case 'offer': // Offer comes from 'initiator' (Cordova app) or 'streamer' (guest browser)
+                    case 'offer': // Offer comes from 'initiator' (Cordova app) or 'streamer' (browser)
                         if (message.offer) {
                             updateConnectionStatus('connecting', 'Offer received. Processing...');
                             await handleOffer(message.offer);
@@ -1054,9 +1054,8 @@
             
             hostSessionInfoDiv.innerHTML = 
                 `New Session ID: <strong>${currentSessionId}</strong><br>` +
-                `Share this link with the guest streamer: <input type="text" value="${streamerLink}" id="streamerLinkInput" readonly style="width:80%; margin:5px 0;">` +
-                `<button onclick="copyLink('streamerLinkInput')">Copy Link</button><br>` +
-                `Waiting for streamer to connect...`;
+                `Share this link: <input type="text" value="${streamerLink}" id="streamerLinkInput" readonly style="width:80%; margin:5px 0;">` +
+                `<button onclick="copyLink('streamerLinkInput')">Copy Link</button><br>`;
 
             document.querySelector('.connection-controls').style.display = 'block'; // Show connection controls for host to "join" their own session as viewer
             document.getElementById('hostControls').style.display = 'block';

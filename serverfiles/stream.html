@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Guest Streamer</title>
+    <title>Streamer</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -247,7 +247,7 @@
                 websocket.send(JSON.stringify({
                     type: 'register',
                     sessionId: sessionId,
-                    peerType: 'streamer' // New peerType for guest streamer
+                    peerType: 'streamer' // New peerType for streamer
                 }));
 
                 if (keepAliveIntervalId) clearInterval(keepAliveIntervalId);
