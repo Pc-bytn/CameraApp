@@ -1,44 +1,53 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stream Viewer</title>    <style>
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            margin: 0; 
+    <title>Stream Viewer</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
             padding: 20px;
             background-color: #f8f9fa;
             color: #343a40;
         }
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
         }
+
         h1 {
             color: #2c3e50;
             margin-bottom: 20px;
             font-weight: 500;
         }
-        video { 
-            border: none; 
-            max-width: 100%; 
+
+        video {
+            border: none;
+            max-width: 100%;
             background-color: #333;
             border-radius: 8px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
         }
-        input, button { 
-            padding: 10px 15px; 
-            margin: 5px; 
+
+        input,
+        button {
+            padding: 10px 15px;
+            margin: 5px;
             font-size: 0.95em;
             border-radius: 6px;
             border: 1px solid #ced4da;
             outline: none;
         }
+
         input {
             min-width: 250px;
             background-color: #fff;
         }
+
         button {
             background-color: #4682B4;
             color: white;
@@ -46,19 +55,34 @@
             cursor: pointer;
             transition: background-color 0.2s;
         }
+
         button:hover {
             background-color: #3a6d99;
         }
+
         #connectionStatus {
             padding: 12px;
             margin: 15px 0;
             border-radius: 6px;
             font-weight: 500;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
         }
-        .connecting { background-color: #FFF3CD; color: #856404; }
-        .connected { background-color: #D4EDDA; color: #155724; }
-        .disconnected { background-color: #F8D7DA; color: #721C24; }
+
+        .connecting {
+            background-color: #FFF3CD;
+            color: #856404;
+        }
+
+        .connected {
+            background-color: #D4EDDA;
+            color: #155724;
+        }
+
+        .disconnected {
+            background-color: #F8D7DA;
+            color: #721C24;
+        }
+
         #videoDebugInfo {
             margin-top: 15px;
             padding: 12px;
@@ -68,28 +92,39 @@
             font-size: 0.9em;
             max-height: 200px;
             overflow-y: auto;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-        }        #mediaControls button:disabled {
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        #mediaControls button:disabled {
             background-color: #e2e6ea;
             color: #a0a5ab;
             cursor: not-allowed;
         }
-        #clipsList, #screenshotsList {
+
+        #clipsList,
+        #screenshotsList {
             margin-top: 20px;
             padding: 15px;
             background-color: #ffffff;
             border-radius: 8px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
         }
-        #clipsList h3, #screenshotsList h3 {
+
+        #clipsList h3,
+        #screenshotsList h3 {
             margin-top: 0;
             color: #2c3e50;
             font-weight: 500;
         }
-        #clipsList ul, #screenshotsList ul {
+
+        #clipsList ul,
+        #screenshotsList ul {
             list-style-type: none;
             padding-left: 0;
-        }        #clipsList li, #screenshotsList li {
+        }
+
+        #clipsList li,
+        #screenshotsList li {
             background-color: #f9f9f9;
             border: 1px solid #eaeaea;
             padding: 12px;
@@ -100,34 +135,43 @@
             align-items: center;
             transition: background-color 0.2s;
         }
-        #clipsList li:hover, #screenshotsList li:hover {
+
+        #clipsList li:hover,
+        #screenshotsList li:hover {
             background-color: #f3f4f6;
         }
+
         .media-item-info {
             flex-grow: 1;
             margin-right: 15px;
         }
+
         .media-item-info a {
             color: #3a80c5;
             text-decoration: none;
             word-break: break-all;
             font-weight: 500;
         }
+
         .media-item-info a:hover {
             text-decoration: underline;
         }
+
         .media-item-actions {
             display: flex;
             align-items: center;
             gap: 10px;
             flex-shrink: 0;
-        }        .media-item-actions .rename-input {
+        }
+
+        .media-item-actions .rename-input {
             padding: 8px 10px;
             border: 1px solid #dee2e6;
             border-radius: 4px;
             width: 170px;
             font-size: 0.9em;
         }
+
         .media-item-actions button {
             padding: 8px 12px;
             border: none;
@@ -139,37 +183,48 @@
             font-size: 0.9em;
             transition: background-color 0.2s;
         }
+
         .media-item-actions button:hover {
             background-color: #5a6268;
         }
+
         .media-item-actions button:disabled {
             background-color: #e9ecef;
             color: #adb5bd;
             cursor: not-allowed;
         }
+
         .media-item-actions .rename-button {
             background-color: #5cb85c;
         }
+
         .media-item-actions .rename-button:hover {
             background-color: #4cae4c;
         }
+
         .media-item-actions .upload-button {
             background-color: #428bca;
         }
+
         .media-item-actions .upload-button:hover {
             background-color: #3778b3;
         }
+
         .media-item-status {
             font-size: 0.9em;
             min-width: 100px;
             text-align: left;
             font-weight: 500;
-        }        .media-item-status.uploading {
+        }
+
+        .media-item-status.uploading {
             color: #007bff;
         }
+
         .media-item-status.uploaded {
             color: #28a745;
         }
+
         .media-item-status.failed {
             color: #dc3545;
         }
@@ -180,35 +235,43 @@
             padding: 18px;
             background-color: #ffffff;
             border-radius: 8px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
             display: flex;
             flex-wrap: wrap;
             align-items: center;
             gap: 10px;
         }
+
         #mediaControls button {
             min-width: 120px;
             text-align: center;
         }
+
         #startClipButton {
             background-color: #dc3545;
         }
+
         #startClipButton:hover {
             background-color: #c82333;
         }
+
         #endClipButton {
             background-color: #ffc107;
             color: #212529;
         }
+
         #endClipButton:hover {
             background-color: #e0a800;
         }
+
         #screenshotButton {
             background-color: #17a2b8;
         }
+
         #screenshotButton:hover {
             background-color: #138496;
         }
+
         #clipStatus {
             margin-left: 10px;
             font-style: italic;
@@ -216,11 +279,13 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <h1>WebRTC Stream Viewer / Host</h1>
 
-        <div id="hostControls" style="margin-bottom: 20px; padding: 15px; background-color: #e9ecef; border-radius: 8px;">
+        <div id="hostControls"
+            style="margin-bottom: 20px; padding: 15px; background-color: #e9ecef; border-radius: 8px;">
             <h2>Host Session</h2>
             <button onclick="initiateHostSession()">Initiate New Host Session</button>
             <div id="hostSessionInfo" style="margin-top: 10px;"></div>
@@ -233,7 +298,7 @@
         </div>
         <div id="connectionStatus" style="display: none;"></div>
         <video id="remoteVideo" autoplay playsinline controls muted></video>
-        <div id="videoDebugInfo" style="display: none;"></div>
+        <div id="videoDebugInfo" style="display: none;"></div> <!-- Debug info for development -->
 
         <div id="mediaControls">
             <button id="startClipButton" onclick="startClip()" disabled>Start Clip</button>
@@ -253,9 +318,11 @@
             </div>
         </div>
     </div>
-    
+
     <script src="PRIVATE_URL.JS"></script>
-    <script>        let peerConnection;
+    <script>
+
+        let peerConnection;
         const webSocketSignalingUrl = window.WEBSOCKET_SIGNALING_URL;
         let currentSessionId;
         let reconnectAttempts = 0;
@@ -271,7 +338,9 @@
         let mediaRecorder;
         let recordedChunks = [];
         let streamStartTime;
-        let clipStartTime;        document.addEventListener('DOMContentLoaded', function() {
+        let clipStartTime;
+
+        document.addEventListener('DOMContentLoaded', function () {
             const urlParams = new URLSearchParams(window.location.search);
             const sessionIdFromUrl = urlParams.get('sessionId');
             const roleFromUrl = urlParams.get('role'); // Check for role=host
@@ -280,7 +349,7 @@
             if (roleFromUrl === 'host') {
                 currentRole = 'host';
                 document.getElementById('hostControls').style.display = 'block';
-                 // Hide normal viewer join if role is host and no session ID yet
+                // Hide normal viewer join if role is host and no session ID yet
                 if (!sessionIdFromUrl) {
                     document.querySelector('.connection-controls').style.display = 'none';
                 }
@@ -288,19 +357,19 @@
                 currentRole = 'viewer';
                 document.getElementById('hostControls').style.display = 'none';
             }
-            
+
             // Initialize debug mode from URL parameter if present
             if (debugParam === '1' || debugParam === 'true') {
                 isDebugMode = true;
                 console.log('Debug mode enabled by URL parameter');
             }
-            
+
             // Add keyboard shortcut for debug mode (Ctrl+Shift+D)
-            document.addEventListener('keydown', function(e) {
+            document.addEventListener('keydown', function (e) {
                 if (e.ctrlKey && e.shiftKey && e.key === 'D') {
                     isDebugMode = !isDebugMode;
                     const debugElement = document.getElementById('videoDebugInfo');
-                    
+
                     if (isDebugMode) {
                         debugElement.style.display = 'block';
                         console.log('Debug mode enabled by keyboard shortcut');
@@ -308,14 +377,14 @@
                         debugElement.style.display = 'none';
                         console.log('Debug mode disabled by keyboard shortcut');
                     }
-                    
+
                     e.preventDefault();
                 }
             });
-            
+
             // Check browser compatibility
             checkMediaCompatibility();
-            
+
             // Auto-join if session ID is in URL
             if (sessionIdFromUrl) {
                 document.getElementById('sessionIdInput').value = sessionIdFromUrl;
@@ -355,10 +424,12 @@
             if (currentRole === 'host') {
                 document.getElementById('hostControls').style.display = 'block';
             }
-        }        function updateVideoDebugInfo(message) {
+        }
+
+        function updateVideoDebugInfo(message) {
             // Always log to console regardless of debug mode
             console.log(`Video Debug: ${message}`);
-            
+
             // Only update UI if debug mode is enabled
             if (isDebugMode) {
                 const debugElement = document.getElementById('videoDebugInfo');
@@ -443,14 +514,14 @@
                         break;
                     case 'recovery_attempt':
                         updateConnectionStatus('connecting', 'Initiator is attempting to recover connection...');
-                        
+
                         // Reset timeout since initiator is actively working on it
                         if (reconnectTimeoutId) {
                             clearTimeout(reconnectTimeoutId);
                             reconnectTimeoutId = setTimeout(() => {
-                                if (isReconnecting && peerConnection && 
-                                    (peerConnection.iceConnectionState !== 'connected' && 
-                                     peerConnection.iceConnectionState !== 'completed')) {
+                                if (isReconnecting && peerConnection &&
+                                    (peerConnection.iceConnectionState !== 'connected' &&
+                                        peerConnection.iceConnectionState !== 'completed')) {
                                     updateConnectionStatus('disconnected', 'Recovery attempt timed out.');
                                 }
                             }, RECONNECT_TIMEOUT);
@@ -522,7 +593,7 @@
             updateConnectionStatus('connecting', `Attempting to join stream for session ${currentSessionId} as ${currentRole}...`);
             reconnectAttempts = 0;
             isReconnecting = false;
-            
+
             connectWebSocketAndJoin(); // This will register with the new currentSessionId and currentRole
         }
 
@@ -538,7 +609,7 @@
             peerConnection.ontrack = event => {
                 updateVideoDebugInfo(`Track received: ${event.track.kind}`);
                 const remoteVideo = document.getElementById('remoteVideo');
-                
+
                 // Ensure the video is ready to play
                 remoteVideo.onloadedmetadata = () => {
                     updateVideoDebugInfo("Video metadata loaded, attempting to play");
@@ -589,7 +660,7 @@
             peerConnection.oniceconnectionstatechange = () => {
                 console.log(`ICE connection state (${currentRole}): ${peerConnection.iceConnectionState}`);
                 updateVideoDebugInfo(`ICE connection state: ${peerConnection.iceConnectionState}`);
-                
+
                 if (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'completed') {
                     updateConnectionStatus('connected', 'Stream connected successfully!');
                     reconnectAttempts = 0;
@@ -635,30 +706,30 @@
 
         function handleConnectionFailure() {
             if (isReconnecting) return;
-            
+
             isReconnecting = true;
             reconnectAttempts++;
-            
+
             if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
                 updateConnectionStatus('connecting', `WebRTC connection failed. Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-                
+
                 if (reconnectTimeoutId) {
                     clearTimeout(reconnectTimeoutId);
                 }
-                
+
                 // Request ICE restart from initiator/streamer
                 sendSignalingMessage({ type: 'request_ice_restart' }); // Sent to 'initiator' or 'streamer'
                 console.log(`WebRTC connection failed. ${currentRole} is requesting ICE restart.`);
-                
+
                 // Set timeout for this reconnection attempt
                 reconnectTimeoutId = setTimeout(() => {
-                    if (isReconnecting && peerConnection && 
-                        (peerConnection.iceConnectionState !== 'connected' && 
-                         peerConnection.iceConnectionState !== 'completed')) {
-                        
+                    if (isReconnecting && peerConnection &&
+                        (peerConnection.iceConnectionState !== 'connected' &&
+                            peerConnection.iceConnectionState !== 'completed')) {
+
                         updateConnectionStatus('disconnected', `Reconnect attempt ${reconnectAttempts} timed out.`);
                         sendSignalingMessage({ type: 'recovery_timeout' });
-                        
+
                         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
                             updateConnectionStatus('disconnected', 'Failed to reconnect after multiple attempts.');
                             stopViewing(false);
@@ -700,7 +771,7 @@
             }
             if (websocket) {
                 if (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING) {
-                    websocket.onclose = null; 
+                    websocket.onclose = null;
                     websocket.close();
                 }
                 websocket = null;
@@ -727,26 +798,28 @@
             if (mediaRecorder && mediaRecorder.state !== "inactive") {
                 mediaRecorder.stop();
             }
-        }        function checkMediaCompatibility() {
+        }
+
+        function checkMediaCompatibility() {
             updateVideoDebugInfo(`Browser: ${navigator.userAgent}`);
             if (navigator.mediaDevices) {
                 updateVideoDebugInfo("mediaDevices API available");
             } else {
                 updateVideoDebugInfo("mediaDevices API NOT available");
             }
-            
+
             if (window.RTCPeerConnection) {
                 updateVideoDebugInfo("RTCPeerConnection API available");
             } else {
                 updateVideoDebugInfo("RTCPeerConnection API NOT available");
             }
-            
+
             if (window.MediaStream) {
                 updateVideoDebugInfo("MediaStream API available");
             } else {
                 updateVideoDebugInfo("MediaStream API NOT available");
             }
-            
+
             // Apply appropriate display setting based on debug mode
             const debugElement = document.getElementById('videoDebugInfo');
             debugElement.style.display = isDebugMode ? 'block' : 'none';
@@ -786,7 +859,7 @@
                     updateVideoDebugInfo('Clipping started.');
                     console.log('MediaRecorder started, state:', mediaRecorder.state);
                 };
-                
+
                 mediaRecorder.onstop = () => {
                     document.getElementById('startClipButton').disabled = false;
                     document.getElementById('endClipButton').disabled = true;
@@ -805,10 +878,10 @@
                     const blob = new Blob(recordedChunks, { type: 'video/webm' });
                     const url = URL.createObjectURL(blob);
                     const clipName = `clip_${new Date().toISOString().replace(/[:.]/g, '-')}.webm`;
-                    
+
                     addMediaToList('clipsList', clipName, url, blob);
                     recordedChunks = []; // Clear for next recording
-                    
+
                     setTimeout(() => {
                         document.getElementById('clipStatus').textContent = '';
                     }, 3000);
@@ -823,7 +896,7 @@
                     document.getElementById('clipStatus').textContent = 'Clipping error.';
                     updateVideoDebugInfo(`MediaRecorder error: ${event.error.name} - ${event.error.message}`);
                 };
-                
+
                 mediaRecorder.start();
 
             } catch (e) {
@@ -863,7 +936,7 @@
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const fileName = `screenshot-${timestamp}.png`;
 
-            canvas.toBlob(function(blob) {
+            canvas.toBlob(function (blob) {
                 const dataUrl = URL.createObjectURL(blob);
                 addMediaToList('screenshotsList', fileName, dataUrl, blob); // Pass blob
                 document.getElementById('clipStatus').textContent = `Screenshot ${fileName} captured.`;
@@ -873,7 +946,7 @@
         function addMediaToList(listId, fileName, dataUrl, blob) { // Added blob parameter
             const list = document.getElementById(listId).querySelector('ul');
             const listItem = document.createElement('li');
-            
+
             const mediaInfoDiv = document.createElement('div');
             mediaInfoDiv.classList.add('media-item-info');
 
@@ -882,7 +955,7 @@
             link.textContent = fileName;
             link.download = fileName;
             mediaInfoDiv.appendChild(link);
-            
+
             listItem.appendChild(mediaInfoDiv);
 
             // FR010 & FR011: Add Rename and Upload controls
@@ -921,7 +994,7 @@
             const uploadButton = document.createElement('button');
             uploadButton.textContent = 'Upload';
             uploadButton.classList.add('upload-button');
-            
+
             const itemStatusSpan = document.createElement('span'); // Item-specific status
             itemStatusSpan.classList.add('media-item-status');
             itemStatusSpan.style.marginLeft = '10px';
@@ -932,7 +1005,7 @@
                 renameButton.disabled = true;
                 try {
                     // Use link.download as it reflects the current (potentially renamed) filename
-                    const success = await uploadMedia(link.download, blob, currentSessionId, itemStatusSpan); 
+                    const success = await uploadMedia(link.download, blob, currentSessionId, itemStatusSpan);
                     if (success) {
                         itemStatusSpan.textContent = 'Uploaded!';
                         uploadButton.textContent = 'Uploaded';
@@ -950,7 +1023,7 @@
             };
 
             actionsDiv.appendChild(renameButton);
-            actionsDiv.appendChild(renameInput); 
+            actionsDiv.appendChild(renameInput);
             actionsDiv.appendChild(uploadButton);
             actionsDiv.appendChild(itemStatusSpan); // Add item status display
             listItem.appendChild(actionsDiv);
@@ -963,7 +1036,7 @@
         // Modified to return a boolean for success and accept an itemStatusElement
         async function uploadMedia(fileName, blob, sessionId, itemStatusElement) {
             const globalStatusElement = document.getElementById('clipStatus'); // General status
-            
+
             if (!blob) {
                 const msg = 'No media data to upload.';
                 if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
@@ -974,7 +1047,7 @@
             }
             if (!sessionId) {
                 const msg = 'Session ID is missing. Cannot upload.';
-                 if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
+                if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
                 else if (globalStatusElement) globalStatusElement.textContent = msg;
                 alert(msg);
                 console.error('Upload error: Session ID is missing.');
@@ -984,22 +1057,22 @@
             const formData = new FormData();
             formData.append('mediaFile', blob, fileName);
             formData.append('sessionId', sessionId);
-            formData.append('fileName', fileName); 
+            formData.append('fileName', fileName);
 
             if (itemStatusElement) { itemStatusElement.textContent = `Uploading ${fileName}...`; itemStatusElement.className = 'media-item-status uploading'; }
             else if (globalStatusElement) globalStatusElement.textContent = `Uploading ${fileName}...`;
 
             try {
-                const response = await fetch('upload.php', { 
+                const response = await fetch('upload.php', {
                     method: 'POST',
                     body: formData
                 });
 
-                const resultText = await response.text(); 
+                const resultText = await response.text();
                 console.log('Upload response text:', resultText);
 
                 if (response.ok) {
-                    const result = JSON.parse(resultText); 
+                    const result = JSON.parse(resultText);
                     if (result.success) {
                         const msg = `${fileName} uploaded.`;
                         if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status uploaded'; }
@@ -1023,14 +1096,14 @@
                     return false;
                 }
             } catch (error) {
-                const msg = `Error: ${error.message.substring(0,30)}${error.message.length > 30 ? '...' : '' }`;
+                const msg = `Error: ${error.message.substring(0, 30)}${error.message.length > 30 ? '...' : ''}`;
                 if (itemStatusElement) { itemStatusElement.textContent = msg; itemStatusElement.className = 'media-item-status failed'; }
                 else if (globalStatusElement) globalStatusElement.textContent = `Error uploading ${fileName}: ${error.message}`;
                 alert(`Error uploading ${fileName}: ${error.message}`);
                 console.error('Upload fetch error:', error);
                 return false;
             } finally {
-                 setTimeout(() => {
+                setTimeout(() => {
                     if (globalStatusElement && (globalStatusElement.textContent.startsWith(`Uploading ${fileName}`) || globalStatusElement.textContent.startsWith(`${fileName} uploaded`))) {
                         globalStatusElement.textContent = '';
                     }
@@ -1047,12 +1120,12 @@
             currentRole = 'host'; // Explicitly set role
             currentSessionId = generateUniqueId();
             document.getElementById('sessionIdInput').value = currentSessionId; // Populate for potential re-join
-            
+
             const hostSessionInfoDiv = document.getElementById('hostSessionInfo');
             const baseAppUrl = window.location.origin + window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/'));
             const streamerLink = `${baseAppUrl}/stream.html?sessionId=${currentSessionId}`;
-            
-            hostSessionInfoDiv.innerHTML = 
+
+            hostSessionInfoDiv.innerHTML =
                 `New Session ID: <strong>${currentSessionId}</strong><br>` +
                 `Share this link: <input type="text" value="${streamerLink}" id="streamerLinkInput" readonly style="width:80%; margin:5px 0;">` +
                 `<button onclick="copyLink('streamerLinkInput')">Copy Link</button><br>`;
@@ -1061,7 +1134,7 @@
             document.getElementById('hostControls').style.display = 'block';
 
             // Automatically "join" the stream as host to listen for the streamer
-            joinStream(); 
+            joinStream();
         }
 
         function copyLink(inputId) {
@@ -1078,4 +1151,5 @@
 
     </script>
 </body>
+
 </html>
