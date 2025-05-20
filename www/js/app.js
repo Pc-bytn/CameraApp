@@ -445,6 +445,10 @@ function setupPeerConnection() {
                     console.log('App: Assigned remoteAudioStream to viewer audio element.');
                 }
 
+                // Ensure audio is unmuted and at full volume
+                viewerAudio.muted = false;
+                viewerAudio.volume = 1.0;
+
                 viewerAudio.play().then(() => {
                     console.log('App: Viewer audio is playing.');
                     viewerAudioConnected = true;

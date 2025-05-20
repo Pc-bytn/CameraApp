@@ -350,6 +350,59 @@
             margin-left: 5px;
             background-color: #ccc;
         }
+
+        #videoOverlay {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.85);
+            z-index: 10;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-size: 1.5em;
+            color: #333;
+            cursor: pointer;
+        }
+
+        /* New styles for Play Stream button */
+        #playStreamButton {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 20;
+            padding: 24px 48px;
+            font-size: 2em;
+            font-weight: bold;
+            background: linear-gradient(90deg, #ff9800, #f44336);
+            color: #fff;
+            border: none;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+            cursor: pointer;
+            transition: background 0.2s, box-shadow 0.2s;
+            outline: none;
+            animation: pop 0.7s cubic-bezier(.68, -0.55, .27, 1.55) 1;
+        }
+
+        @keyframes pop {
+            0% {
+                transform: scale(0.7) translate(-50%, -50%);
+            }
+
+            80% {
+                transform: scale(1.1) translate(-50%, -50%);
+            }
+
+            100% {
+                transform: scale(1) translate(-50%, -50%);
+            }
+        }
     </style>
 </head>
 
@@ -370,7 +423,11 @@
             <button onclick="stopViewing()">Stop Viewing</button>
         </div>        
         <div id="connectionStatus" style="display: none;"></div>
-        <video id="remoteVideo" autoplay playsinline controls></video>
+        <video id="remoteVideo" autoplay playsinline controls muted></video>
+        <button id="playStreamButton" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;padding:24px 48px;font-size:2em;font-weight:bold;background:linear-gradient(90deg,#ff9800,#f44336);color:#fff;border:none;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.25);cursor:pointer;transition:background 0.2s,box-shadow 0.2s;outline:none;animation:pop 0.7s cubic-bezier(.68,-0.55,.27,1.55) 1;}@keyframes pop{0%{transform:scale(0.7) translate(-50%,-50%);}80%{transform:scale(1.1) translate(-50%,-50%);}100%{transform:scale(1) translate(-50%,-50%);}}">▶️ Play Stream</button>
+        <div id="videoOverlay" style="display:none; position: absolute; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.85); z-index:10; align-items:center; justify-content:center; text-align:center; font-size:1.5em; color:#333; cursor:pointer;">
+            <span>Click to play video</span>
+        </div>
         <div id="videoDebugInfo" style="display: none;"></div> <!-- Debug info for development -->
 
         <div id="mediaControls">
@@ -428,6 +485,9 @@
         let isMicrophoneActive = false;
         let audioAnalysisInterval;
 
+        // New variable to track pending join requests
+        let pendingJoin = false;
+
         document.addEventListener('DOMContentLoaded', function () {
             const urlParams = new URLSearchParams(window.location.search);
             const sessionIdFromUrl = urlParams.get('sessionId');
@@ -437,7 +497,6 @@
             if (roleFromUrl === 'host') {
                 currentRole = 'host';
                 document.getElementById('hostControls').style.display = 'block';
-                // Hide normal viewer join if role is host and no session ID yet
                 if (!sessionIdFromUrl) {
                     document.querySelector('.connection-controls').style.display = 'none';
                 }
@@ -450,6 +509,12 @@
             if (debugParam === '1' || debugParam === 'true') {
                 isDebugMode = true;
                 console.log('Debug mode enabled by URL parameter');
+            }
+
+            // Set currentSessionId from URL param if present
+            if (sessionIdFromUrl) {
+                currentSessionId = sessionIdFromUrl;
+                document.getElementById('sessionIdInput').value = sessionIdFromUrl;
             }
 
             // Add keyboard shortcut for debug mode (Ctrl+Shift+D)
@@ -473,11 +538,28 @@
             // Check browser compatibility
             checkMediaCompatibility();
 
-            // Auto-join if session ID is in URL
+            // Auto-join if session ID is in URL (now currentSessionId is set)
             if (sessionIdFromUrl) {
-                document.getElementById('sessionIdInput').value = sessionIdFromUrl;
-                joinStream(); // Auto-join if sessionId is present (for both roles if applicable)
+                joinStream();
             }
+
+            // Add overlay click handler
+            const overlay = document.getElementById('videoOverlay');
+            const remoteVideo = document.getElementById('remoteVideo');
+            const playStreamButton = document.getElementById('playStreamButton');
+            overlay.addEventListener('click', function () {
+                remoteVideo.muted = false;
+                remoteVideo.play().then(() => {
+                    overlay.style.display = 'none';
+                });
+            });
+
+            playStreamButton.addEventListener('click', function () {
+                remoteVideo.muted = false;
+                remoteVideo.play().then(() => {
+                    playStreamButton.style.display = 'none';
+                });
+            });
         });
 
         const peerConnectionConfig = {
@@ -556,7 +638,6 @@
                 websocket.send(JSON.stringify({
                     type: 'register',
                     sessionId: currentSessionId,
-                    // peerType: 'viewer' // Old
                     peerType: currentRole // 'viewer' or 'host'
                 }));
 
@@ -567,6 +648,13 @@
                         console.log('Sending ping (viewer)');
                     }
                 }, 25000);
+
+                // If a join was pending, just proceed to peerConnection setup (no join message needed)
+                if (pendingJoin) {
+                    // Now that we're registered, proceed to set up peerConnection
+                    setupPeerConnectionAfterRegister();
+                    pendingJoin = false;
+                }
             };
 
             websocket.onmessage = async (event) => {
@@ -655,21 +743,8 @@
             };
         }
 
-        async function joinStream() { // Used by original viewer and host (after initiating)
-            if (!currentSessionId) {
-                alert("Please enter a Session ID.");
-                return;
-            }
-            if (peerConnection && (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'connecting')) {
-                console.log("Join attempt while peerConnection exists and is active. Current state:", peerConnection.iceConnectionState);
-                // Optionally, you might want to stop the existing connection or just return
-                // alert("Already connected or connecting. Please stop the current stream before joining a new one.");
-                // return;
-            }
-
-            updateConnectionStatus('connecting', `Joining stream: ${currentSessionId}...`);
-            currentRole = 'viewer';
-
+        // Move peerConnection setup to a separate function
+        function setupPeerConnectionAfterRegister() {
             peerConnection = new RTCPeerConnection(peerConnectionConfig);
 
             peerConnection.onicecandidate = event => {
@@ -727,8 +802,39 @@
                 });
             };
 
-            sendSignalingMessage({ type: 'join', sessionId: currentSessionId, role: 'viewer' });
-            console.log("Join message sent for session:", currentSessionId);
+            // Instead of sending a join message, just wait for offer from server
+        }
+
+        async function joinStream() { // Used by original viewer and host (after initiating)
+            // Fix: Always get the latest value from the input if currentSessionId is not set
+            if (!currentSessionId) {
+                const inputVal = document.getElementById('sessionIdInput')?.value?.trim();
+                if (inputVal) {
+                    currentSessionId = inputVal;
+                }
+            }
+            if (!currentSessionId) {
+                alert("Please enter a Session ID.");
+                return;
+            }
+            if (peerConnection && (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'connecting')) {
+                console.log("Join attempt while peerConnection exists and is active. Current state:", peerConnection.iceConnectionState);
+                // Optionally, you might want to stop the existing connection or just return
+                // alert("Already connected or connecting. Please stop the current stream before joining a new one.");
+                // return;
+            }
+
+            updateConnectionStatus('connecting', `Joining stream: ${currentSessionId}...`);
+            currentRole = 'viewer';
+
+            // Ensure WebSocket is connected before proceeding
+            if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+                pendingJoin = true;
+                connectWebSocketAndJoin();
+                return;
+            }
+
+            setupPeerConnectionAfterRegister();
         }
 
         async function handleOffer(offer) {
@@ -747,11 +853,16 @@
                 // Ensure the video is ready to play
                 remoteVideo.onloadedmetadata = () => {
                     updateVideoDebugInfo("Video metadata loaded, attempting to play");
+                    remoteVideo.muted = true; // Try muted first
                     remoteVideo.play()
-                        .then(() => updateVideoDebugInfo("Video playback started successfully"))
-                        .catch(e => {
-                            updateVideoDebugInfo(`Error starting video: ${e.message}`);
-                            alert('Error playing video. Try clicking on the video to unmute/play.');
+                        .then(() => {
+                            updateVideoDebugInfo("Video autoplay succeeded (muted)");
+                            document.getElementById('playStreamButton').style.display = 'none';
+                            remoteVideo.muted = false;
+                        })
+                        .catch(error => {
+                            updateVideoDebugInfo(`Error starting video: ${error.message}`);
+                            document.getElementById('playStreamButton').style.display = 'block';
                         });
                 };
 
