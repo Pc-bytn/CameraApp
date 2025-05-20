@@ -656,33 +656,79 @@
         }
 
         async function joinStream() { // Used by original viewer and host (after initiating)
-            currentSessionId = document.getElementById('sessionIdInput').value.trim();
             if (!currentSessionId) {
-                alert('Please enter a Session ID.');
+                alert("Please enter a Session ID.");
                 return;
             }
-            // if (peerConnection && peerConnection.iceConnectionState !== 'closed' && peerConnection.iceConnectionState !== 'failed') {
-            //     alert('Already connected or attempting to connect. Please "Stop Viewing" first.');
-            //     return;
-            // }
-
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                // If trying to join a new session, close the old one first.
-                // This is more relevant if the user manually changes session ID and clicks join again.
-                stopViewing(true); // Notify server about leaving old session
-            }
-            // Ensure peerConnection is reset if joining a new stream
-            if (peerConnection) {
-                peerConnection.close();
-                peerConnection = null;
+            if (peerConnection && (peerConnection.iceConnectionState === 'connected' || peerConnection.iceConnectionState === 'connecting')) {
+                console.log("Join attempt while peerConnection exists and is active. Current state:", peerConnection.iceConnectionState);
+                // Optionally, you might want to stop the existing connection or just return
+                // alert("Already connected or connecting. Please stop the current stream before joining a new one.");
+                // return;
             }
 
+            updateConnectionStatus('connecting', `Joining stream: ${currentSessionId}...`);
+            currentRole = 'viewer';
 
-            updateConnectionStatus('connecting', `Attempting to join stream for session ${currentSessionId} as ${currentRole}...`);
-            reconnectAttempts = 0;
-            isReconnecting = false;
+            peerConnection = new RTCPeerConnection(peerConnectionConfig);
 
-            connectWebSocketAndJoin(); // This will register with the new currentSessionId and currentRole
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    sendSignalingMessage({ type: 'candidate', candidate: event.candidate, sessionId: currentSessionId, role: currentRole });
+                }
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log(`Viewer: ICE connection state: ${peerConnection.iceConnectionState}`);
+                updateConnectionStatus(peerConnection.iceConnectionState, `ICE Connection: ${peerConnection.iceConnectionState}`);
+                if (peerConnection.iceConnectionState === 'failed' || peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'closed') {
+                    // Handle connection failure or closure
+                    handleConnectionFailure(); // Or a more specific handler
+                }
+            };
+
+            peerConnection.ontrack = event => {
+                console.log("Track received on viewer:", event.track.kind, "Stream ID:", event.streams[0] ? event.streams[0].id : "N/A");
+                const remoteVideo = document.getElementById('remoteVideo');
+
+                if (event.streams && event.streams[0]) {
+                    if (remoteVideo.srcObject !== event.streams[0]) {
+                        remoteVideo.srcObject = event.streams[0];
+                        console.log('Viewer: Remote stream assigned to video element.');
+                    }
+                } else {
+                    // Fallback for track-only events if necessary, though streams[0] is standard
+                    if (!remoteVideo.srcObject) {
+                        remoteVideo.srcObject = new MediaStream();
+                    }
+                    if (event.track && !remoteVideo.srcObject.getTrackById(event.track.id)) {
+                        remoteVideo.srcObject.addTrack(event.track);
+                        console.log(`Viewer: Remote ${event.track.kind} track added to video element's stream.`);
+                    }
+                }
+                
+                remoteVideo.play().then(() => {
+                    console.log("Viewer: Remote video playing.");
+                    remoteVideo.muted = false; // Ensure unmuted if autoplay succeeded
+                }).catch(error => {
+                    console.warn("Viewer: Autoplay for remote video was prevented:", error.name, error.message);
+                    if (error.name === "NotAllowedError" || error.name === "NotSupportedError") {
+                        console.log("Viewer: Autoplay with sound not allowed by browser. Attempting to play muted.");
+                        remoteVideo.muted = true;
+                        remoteVideo.play().then(() => {
+                            console.log("Viewer: Remote video playing (muted). User can unmute using video controls.");
+                            // No alert, as requested. User has 'controls' on the video element to unmute.
+                        }).catch(mutedPlayError => {
+                            console.error("Viewer: Error playing remote video even when muted:", mutedPlayError.name, mutedPlayError.message);
+                        });
+                    } else {
+                        console.error("Viewer: Unexpected error playing remote video:", error.name, error.message);
+                    }
+                });
+            };
+
+            sendSignalingMessage({ type: 'join', sessionId: currentSessionId, role: 'viewer' });
+            console.log("Join message sent for session:", currentSessionId);
         }
 
         async function handleOffer(offer) {

@@ -258,14 +258,28 @@ async function initializeMediaStream() {
             }
         };
         try {
+            // Ensure any existing local stream is stopped before getting a new one
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
             }
+
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            const localVideo = document.getElementById('local-video');
-            if (localVideo) {
-                localVideo.srcObject = localStream;
+            const videoElement = document.getElementById('local-video');
+            if (videoElement) {
+                videoElement.srcObject = localStream;
+                videoElement.muted = true; // Mute the local video element to prevent echo
+                videoElement.play().catch(e => console.warn("Local video play failed (autoplay restriction likely):", e.message));
             }
+
+            // Update local audio mute state based on the new stream's track
+            const audioTrack = localStream.getAudioTracks()[0];
+            isLocalAudioMuted = !audioTrack.enabled;
+            updateMicrophoneButtonState();
+
+            // Setup audio analyser for viewer audio detection
+            setupAudioAnalyser(localStream);
+
+            console.log('Local media stream initialized:', localStream);
         } catch (e) {
             // Try fallback if facingMode ideal fails
             if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
@@ -278,6 +292,8 @@ async function initializeMediaStream() {
                     const localVideo = document.getElementById('local-video');
                     if (localVideo) {
                         localVideo.srcObject = localStream;
+                        localVideo.muted = true; // Mute the local video element to prevent echo
+                        localVideo.play().catch(e => console.warn("Local video play failed (autoplay restriction likely):", e.message));
                     }
                 } catch (err) {
                     alert('Camera not available: ' + (err.message || err));
@@ -404,49 +420,51 @@ function setupPeerConnection() {
             }
         });        // Handle incoming tracks from viewer (for bi-directional audio)
         peerConnection.ontrack = event => {
-            console.log(`Received remote track: ${event.track.kind}`);
-            
-            // Only handle audio tracks from viewer
+            console.log('App: Track received:', event.track.kind, 'Stream ID:', event.streams[0] ? event.streams[0].id : "N/A");
             if (event.track.kind === 'audio') {
-                // Create audio element to play viewer's audio
-        const audioElement = document.createElement('audio');
-                audioElement.id = 'viewer-audio';
-                audioElement.autoplay = true;
-                audioElement.controls = false;
-                
-                // Add the track to a new stream
                 if (!remoteAudioStream) {
                     remoteAudioStream = new MediaStream();
                 }
-                remoteAudioStream.addTrack(event.track);
-                audioElement.srcObject = remoteAudioStream;
-                
-                // Remove any existing viewer audio elements
-                const existingAudio = document.getElementById('viewer-audio');
-                if (existingAudio) {
-                    document.body.removeChild(existingAudio);
+                if (!remoteAudioStream.getTrackById(event.track.id)) {
+                    remoteAudioStream.addTrack(event.track);
+                    console.log('App: Viewer audio track added to remoteAudioStream.');
                 }
-                
-                // Add the element to the DOM (hidden) to allow audio playback
-                audioElement.style.display = 'none';
-                document.body.appendChild(audioElement);
-                
-                // Update UI to show audio connection status
-                viewerAudioConnected = true;
-                showAudioStatus(true);
-                
-                // Set up audio analysis for speaking detection
-                setupAudioAnalyser(remoteAudioStream);
-                
-                // Show audio controls once viewer audio is connected
-                updateAudioControlsVisibility(true);
-                
-                // Apply mute state if previously set
-                if (isRemoteAudioMuted) {
-                    audioElement.muted = true;
+
+                let viewerAudio = document.getElementById('viewer-audio');
+                if (!viewerAudio) {
+                    viewerAudio = document.createElement('audio');
+                    viewerAudio.id = 'viewer-audio';
+                    viewerAudio.autoplay = true;
+                    // viewerAudio.controls = true; // Optional: for debugging
+                    document.body.appendChild(viewerAudio); // Append to body or a specific container
+                    console.log('App: Created and appended viewer audio element.');
                 }
-                
-                console.log('Audio from viewer connected and playing');
+
+                if (viewerAudio.srcObject !== remoteAudioStream) {
+                    viewerAudio.srcObject = remoteAudioStream;
+                    console.log('App: Assigned remoteAudioStream to viewer audio element.');
+                }
+
+                viewerAudio.play().then(() => {
+                    console.log('App: Viewer audio is playing.');
+                    viewerAudioConnected = true;
+                    showAudioStatus(true); // Update UI to show audio is connected
+                    updateSpeakerButtonState(); // Ensure speaker button reflects current state
+                }).catch(error => {
+                    console.error('App: Error playing viewer audio:', error.name, error.message);
+                    alert(`Error playing viewer audio: ${error.message}. Please check browser permissions and settings.`);
+                    viewerAudioConnected = false;
+                    showAudioStatus(false);
+                });
+
+            } else if (event.track.kind === 'video') {
+                // Existing video track handling can remain here if it was separate
+                // Or integrate it if it was part of a general track handler
+                const videoElement = document.getElementById('local-video'); // This seems to be for local video, ensure correct target for remote
+                if (event.streams && event.streams[0]) {
+                    // This part might be more relevant for the viewer.html or if the app also receives video
+                    // For now, focusing on audio from viewer to app.
+                }
             }
         };
 
