@@ -269,12 +269,9 @@
 
         #audioIndicator.muted {
             background-color: #dc3545;
-        }
-
-        #audioIndicator.enabled {
+        }        #audioIndicator.enabled {
             background-color: #ffc107;
         }
-
         /* Modern media controls section */
         #mediaControls {
             margin-top: 20px;
@@ -371,9 +368,9 @@
             <input type="text" id="sessionIdInput" placeholder="Enter Session ID from App">
             <button onclick="joinStream()">Join Stream</button>
             <button onclick="stopViewing()">Stop Viewing</button>
-        </div>
+        </div>        
         <div id="connectionStatus" style="display: none;"></div>
-        <video id="remoteVideo" autoplay playsinline controls muted></video>
+        <video id="remoteVideo" autoplay playsinline controls></video>
         <div id="videoDebugInfo" style="display: none;"></div> <!-- Debug info for development -->
 
         <div id="mediaControls">
@@ -725,15 +722,15 @@
                         remoteVideo.srcObject = new MediaStream();
                     }
                     remoteVideo.srcObject.addTrack(event.track);
-                }
-
-                // Enable controls once the track is received and video is playing
+                }                // Enable controls once the track is received and video is playing
                 remoteVideo.oncanplay = () => {
                     document.getElementById('startClipButton').disabled = false;
                     document.getElementById('screenshotButton').disabled = false;
                     // Enable audio button when stream is established
                     document.getElementById('toggleAudioButton').disabled = false;
-                    updateVideoDebugInfo('Video can play, media controls enabled.');
+                    
+                    remoteVideo.muted = false; // Ensure incoming stream audio is on by default
+                    updateVideoDebugInfo('Video can play, media controls enabled. Audio initialized.');
                 };
             };
 
@@ -878,9 +875,7 @@
                     websocket.close();
                 }
                 websocket = null;
-            }
-
-            const remoteVideo = document.getElementById('remoteVideo');
+            }            const remoteVideo = document.getElementById('remoteVideo');
             if (remoteVideo) remoteVideo.srcObject = null;
             updateConnectionStatus('disconnected', 'Viewing stopped.');
             document.getElementById('connectionStatus').style.display = 'block';
@@ -894,6 +889,7 @@
             document.getElementById('toggleAudioButton').innerHTML = '🎙️ Enable Mic';
             document.getElementById('toggleAudioButton').classList.remove('active');
             document.getElementById('audioIndicator').className = '';
+            
             document.getElementById('clipStatus').textContent = '';
 
             // For host, reset host UI elements if needed
@@ -1256,7 +1252,35 @@
             }
         }
 
-        // FR014: Bi-directional Audio Communication
+        // FR014: Bi-directional Audio Communication        // FR014: Toggle stream audio (receiver audio) // This function is being removed
+        /* function toggleStreamAudio() {
+            const remoteVideo = document.getElementById('remoteVideo');
+            const toggleButton = document.getElementById('toggleStreamAudioButton');
+            const audioIcon = document.getElementById('streamAudioIcon');
+            
+            if (!remoteVideo || !remoteVideo.srcObject) {
+                alert('No active stream to control audio.');
+                return;
+            }
+            
+            // Toggle muted state
+            remoteVideo.muted = !remoteVideo.muted;
+            
+            if (remoteVideo.muted) {
+                // Audio is now off
+                audioIcon.textContent = '🔇';
+                toggleButton.textContent = ' Audio Off';
+                toggleButton.className = 'audio-off';
+                updateVideoDebugInfo('Stream audio muted');
+            } else {
+                // Audio is now on
+                audioIcon.textContent = '🔊';
+                toggleButton.textContent = ' Audio On';
+                toggleButton.className = 'audio-on';
+                updateVideoDebugInfo('Stream audio unmuted');
+            }
+        } */
+        
         async function toggleAudio() {
             const toggleButton = document.getElementById('toggleAudioButton');
             const micIcon = document.getElementById('micIcon');

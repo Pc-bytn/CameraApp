@@ -13,6 +13,10 @@ let answerReceived = false;
 let remoteAudioStream; // Stream for incoming viewer audio
 let viewerAudioConnected = false; // Flag to track if viewer audio is connected
 
+// Audio control states
+let isLocalAudioMuted = false;
+let isRemoteAudioMuted = false;
+
 const peerConnectionConfig = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
@@ -339,8 +343,7 @@ function stopWebRTCStream(notifyServer = true) {
         audioAnalyser = null;
         audioDataArray = null;
     }
-    
-    viewerAudioConnected = false;
+      viewerAudioConnected = false;
     showAudioStatus(false);
     
     // Remove audio element if it exists
@@ -348,6 +351,17 @@ function stopWebRTCStream(notifyServer = true) {
     if (viewerAudio) {
         document.body.removeChild(viewerAudio);
     }
+    
+    // Hide audio controls when stream is stopped
+    updateAudioControlsVisibility(false);
+    
+    // Reset audio mute states
+    isLocalAudioMuted = false;
+    isRemoteAudioMuted = false;
+    
+    // Reset audio control button states
+    updateMicrophoneButtonState();
+    updateSpeakerButtonState();
 
     updateCaptureButtonState(false);
 
@@ -395,7 +409,7 @@ function setupPeerConnection() {
             // Only handle audio tracks from viewer
             if (event.track.kind === 'audio') {
                 // Create audio element to play viewer's audio
-                const audioElement = document.createElement('audio');
+        const audioElement = document.createElement('audio');
                 audioElement.id = 'viewer-audio';
                 audioElement.autoplay = true;
                 audioElement.controls = false;
@@ -423,6 +437,14 @@ function setupPeerConnection() {
                 
                 // Set up audio analysis for speaking detection
                 setupAudioAnalyser(remoteAudioStream);
+                
+                // Show audio controls once viewer audio is connected
+                updateAudioControlsVisibility(true);
+                
+                // Apply mute state if previously set
+                if (isRemoteAudioMuted) {
+                    audioElement.muted = true;
+                }
                 
                 console.log('Audio from viewer connected and playing');
             }
@@ -748,6 +770,13 @@ function onDeviceReady() {
     }
 
     updateCaptureButtonState(false);
+    
+    // Initialize audio controls visibility (hidden by default)
+    updateAudioControlsVisibility(false);
+    
+    // Initialize audio control button states
+    updateMicrophoneButtonState();
+    updateSpeakerButtonState();
 
     requestCameraPermission();
 
@@ -760,8 +789,104 @@ function onDeviceReady() {
     });
 
     document.getElementById('send-btn').addEventListener('click', shareSessionLink);
+    
+    // Add event listeners for audio control buttons
+    document.getElementById('mic-toggle-btn').addEventListener('click', toggleMicrophone);
+    document.getElementById('speaker-toggle-btn').addEventListener('click', toggleSpeaker);
 }
 
+// --- Audio Control Functions ---
+function toggleMicrophone() {
+    if (!localStream) {
+        alert('Camera stream not initialized yet.');
+        return;
+    }
+    
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (!audioTrack) {
+        alert('No microphone found or microphone access denied.');
+        return;
+    }
+    
+    isLocalAudioMuted = !isLocalAudioMuted;
+    audioTrack.enabled = !isLocalAudioMuted;
+    
+    // Update UI
+    updateMicrophoneButtonState();
+    
+    // Show notification
+    alert(isLocalAudioMuted ? 'Microphone muted' : 'Microphone unmuted');
+    console.log(`Local microphone ${isLocalAudioMuted ? 'muted' : 'unmuted'}`);
+}
+
+function toggleSpeaker() {
+    if (!remoteAudioStream) {
+        alert('No viewer audio connected yet.');
+        return;
+    }
+    
+    const viewerAudio = document.getElementById('viewer-audio');
+    if (!viewerAudio) {
+        alert('Viewer audio element not found.');
+        return;
+    }
+    
+    isRemoteAudioMuted = !isRemoteAudioMuted;
+    viewerAudio.muted = isRemoteAudioMuted;
+    
+    // Update UI
+    updateSpeakerButtonState();
+    
+    // Show notification
+    alert(isRemoteAudioMuted ? 'Viewer audio muted' : 'Viewer audio unmuted');
+    console.log(`Remote audio ${isRemoteAudioMuted ? 'muted' : 'unmuted'}`);
+}
+
+function updateMicrophoneButtonState() {
+    const micToggleBtn = document.getElementById('mic-toggle-btn');
+    const micOnIcon = micToggleBtn.querySelector('.mic-on');
+    const micOffIcon = micToggleBtn.querySelector('.mic-off');
+    
+    if (isLocalAudioMuted) {
+        micToggleBtn.classList.add('muted');
+        micOnIcon.style.display = 'none';
+        micOffIcon.style.display = 'block';
+    } else {
+        micToggleBtn.classList.remove('muted');
+        micOnIcon.style.display = 'block';
+        micOffIcon.style.display = 'none';
+    }
+}
+
+function updateSpeakerButtonState() {
+    const speakerToggleBtn = document.getElementById('speaker-toggle-btn');
+    const speakerOnIcon = speakerToggleBtn.querySelector('.speaker-on');
+    const speakerOffIcon = speakerToggleBtn.querySelector('.speaker-off');
+    
+    if (isRemoteAudioMuted) {
+        speakerToggleBtn.classList.add('muted');
+        speakerOnIcon.style.display = 'none';
+        speakerOffIcon.style.display = 'block';
+    } else {
+        speakerToggleBtn.classList.remove('muted');
+        speakerOnIcon.style.display = 'block';
+        speakerOffIcon.style.display = 'none';
+    }
+}
+
+// Function to update the visibility of audio control buttons
+function updateAudioControlsVisibility(show) {
+    const audioControls = document.querySelector('.audio-controls');
+    if (!audioControls) return;
+    
+    if (show) {
+        audioControls.style.display = 'flex';
+    } else {
+        audioControls.style.display = 'none';
+    }
+}
+
+// --- Camera Permissions and Initialization ---
 function requestCameraPermission() {
     if (cordova.plugins && cordova.plugins.permissions) {
         const permissions = cordova.plugins.permissions;
