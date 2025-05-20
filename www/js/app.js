@@ -2,6 +2,7 @@
 let localStream;
 let peerConnection;
 const webSocketSignalingUrl = "WEBSOCKET_PRIVATE_URL"; // Placeholder: e.g., ws://yourserver.com:8080 or wss://yourserver.com/ws
+const privateWebUrl = "PRIVATE_WEB_URL"; 
 let sessionId; // To identify this specific WebRTC session
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -195,6 +196,61 @@ async function startWebRTCStream() {
     alert('Starting WebRTC stream setup...');
     reconnectAttempts = 0;
     isReconnecting = false;
+
+    let wsServerReady = false;
+    let nginxServerReady = false;
+    let serverCheckResult = null;
+    let maxAttempts = 10;
+    let attempt = 0;
+    while ((!wsServerReady || !nginxServerReady) && attempt < maxAttempts) {
+        try {
+            const wsUrlObj = new URL(webSocketSignalingUrl);
+            const serverCheckResponse = await fetch(`${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//${privateWebUrl}/sys/StartServers.php`);
+            serverCheckResult = await serverCheckResponse.json();
+            
+            // Check WebSocket server status
+            if (serverCheckResult.running) {
+                wsServerReady = true;
+                if (serverCheckResult.started) {
+                    alert('WebSocket server started successfully.');
+                }
+            }
+            
+            // Check Nginx server status
+            if (serverCheckResult.nginx_running) {
+                nginxServerReady = true;
+                if (serverCheckResult.nginx_started) {
+                    alert('Nginx server started successfully.');
+                }
+            }
+            
+            // If both servers are ready, we can break the loop
+            if (wsServerReady && nginxServerReady) {
+                break;
+            }
+        } catch (err) {
+            console.error('Error checking server status:', err);
+            // Optionally log error, but continue retrying
+        }
+        attempt++;
+        if (attempt < maxAttempts) {
+            await new Promise(res => setTimeout(res, 1000)); // Wait 1 second before retry
+        }
+    }
+
+    // Handle server status
+    if (!wsServerReady && !nginxServerReady) {
+        alert('Both WebSocket and Nginx servers are not running and could not be started. Please try again later.');
+        updateCaptureButtonState(false);
+        return;
+    } else if (!wsServerReady) {
+        alert('WebSocket server is not running and could not be started. Please try again later.');
+        updateCaptureButtonState(false);
+        return;
+    } else if (!nginxServerReady) {
+        alert('Nginx server is not running and could not be started.');
+        return;
+    }
 
     try {
         await ensureCameraPermissions();
@@ -522,7 +578,7 @@ async function shareSessionLink() {
 
     try {
         const wsUrlObj = new URL(webSocketSignalingUrl);
-        const viewerPageUrl = `${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//PRIVATE_WEB_URL/sys/viewer.html?sessionId=${sessionId}`;
+        const viewerPageUrl = `${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//${privateWebUrl}/sys/viewer.html?sessionId=${sessionId}`;
 
         alert(`Share this link with the viewer: ${viewerPageUrl}`);
 
