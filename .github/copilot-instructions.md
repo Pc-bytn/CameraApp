@@ -16,19 +16,13 @@
 ## Project Structure
 
 - `/www` - Web assets (HTML, CSS, JS)
-- `/platforms` - Platform-specific code
-- `/plugins` - Plugin code
-- `/hooks` - Custom build scripts
+- `/serverfiles` - Have the files I put in the IIS server.
 - `config.xml` - App configuration
 
 ## Development Workflow
 
 1. Develop in the `/www` directory
-2. Test in browser:
-   ```
-   cordova run browser
-   ```
-3. Build and test on devices/emulators:
+2. Build and test on devices/emulators:
    ```
    Use Github Actions
    ```
@@ -37,10 +31,8 @@
 
 1. Use the `deviceready` event before accessing device features
 2. Implement proper error handling for plugin calls
-3. Test on real devices, not just emulators
-4. Consider responsive design for different screen sizes
-5. Regularly update Cordova and plugins
-6. Use version control (Git)
+3. Consider responsive design for different screen sizes
+4. Use version control (Git)
 
 ## Debugging
 

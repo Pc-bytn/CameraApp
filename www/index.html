@@ -20,6 +20,13 @@
                 </svg>
             </span>
         </button>
+        
+        <!-- Audio status indicator -->
+        <div id="audio-status" style="position:absolute;top:30px;left:30px;z-index:20;padding:10px;border-radius:50px;background:rgba(0,0,0,0.5);color:#fff;display:none;align-items:center;">
+            <span style="margin-right:5px;">🔊</span>
+            <span id="audio-status-text">Viewer audio connected</span>
+        </div>
+        
         <img id="captured-img" style="display:none;"/>
     </div>
     <script src="cordova.js"></script>

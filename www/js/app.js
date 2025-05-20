@@ -10,6 +10,8 @@ let keepAliveIntervalId;
 let websocket; // WebSocket connection
 let iceCandidateBuffer = [];
 let answerReceived = false;
+let remoteAudioStream; // Stream for incoming viewer audio
+let viewerAudioConnected = false; // Flag to track if viewer audio is connected
 
 const peerConnectionConfig = {
     iceServers: [
@@ -245,7 +247,11 @@ async function initializeMediaStream() {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const constraints = {
             video: { facingMode: { ideal: currentFacingMode } },
-            audio: true
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
         };
         try {
             if (localStream) {
@@ -313,6 +319,34 @@ function stopWebRTCStream(notifyServer = true) {
             websocket.close();
         }
         websocket = null;
+    }    // Clean up audio resources and UI
+    if (remoteAudioStream) {
+        remoteAudioStream.getTracks().forEach(track => {
+            track.stop();
+        });
+        remoteAudioStream = null;
+    }
+    
+    // Clean up audio analysis resources
+    if (audioLevelCheckInterval) {
+        clearInterval(audioLevelCheckInterval);
+        audioLevelCheckInterval = null;
+    }
+    
+    if (audioContext) {
+        audioContext.close().catch(err => console.error('Error closing audio context:', err));
+        audioContext = null;
+        audioAnalyser = null;
+        audioDataArray = null;
+    }
+    
+    viewerAudioConnected = false;
+    showAudioStatus(false);
+    
+    // Remove audio element if it exists
+    const viewerAudio = document.getElementById('viewer-audio');
+    if (viewerAudio) {
+        document.body.removeChild(viewerAudio);
     }
 
     updateCaptureButtonState(false);
@@ -354,7 +388,45 @@ function setupPeerConnection() {
             } else {
                 console.warn('Failed to add track to peer connection');
             }
-        });
+        });        // Handle incoming tracks from viewer (for bi-directional audio)
+        peerConnection.ontrack = event => {
+            console.log(`Received remote track: ${event.track.kind}`);
+            
+            // Only handle audio tracks from viewer
+            if (event.track.kind === 'audio') {
+                // Create audio element to play viewer's audio
+                const audioElement = document.createElement('audio');
+                audioElement.id = 'viewer-audio';
+                audioElement.autoplay = true;
+                audioElement.controls = false;
+                
+                // Add the track to a new stream
+                if (!remoteAudioStream) {
+                    remoteAudioStream = new MediaStream();
+                }
+                remoteAudioStream.addTrack(event.track);
+                audioElement.srcObject = remoteAudioStream;
+                
+                // Remove any existing viewer audio elements
+                const existingAudio = document.getElementById('viewer-audio');
+                if (existingAudio) {
+                    document.body.removeChild(existingAudio);
+                }
+                
+                // Add the element to the DOM (hidden) to allow audio playback
+                audioElement.style.display = 'none';
+                document.body.appendChild(audioElement);
+                
+                // Update UI to show audio connection status
+                viewerAudioConnected = true;
+                showAudioStatus(true);
+                
+                // Set up audio analysis for speaking detection
+                setupAudioAnalyser(remoteAudioStream);
+                
+                console.log('Audio from viewer connected and playing');
+            }
+        };
 
         peerConnection.onicecandidate = event => {
             if (event.candidate) {
@@ -474,7 +546,7 @@ async function createAndSendOffer() {
         
         console.log(`Creating offer with iceRestart: ${isReconnecting}`);
         const offerOptions = {
-            offerToReceiveAudio: true,
+            offerToReceiveAudio: true, // Explicitly enable receiving audio from viewer
             offerToReceiveVideo: true
         };
         
@@ -549,6 +621,123 @@ async function shareSessionLink() {
     }
 }
 
+// --- Audio Status UI Functions ---
+function showAudioStatus(show, isActive = false) {
+    const audioStatusElement = document.getElementById('audio-status');
+    if (!audioStatusElement) return;
+    
+    const statusTextElement = document.getElementById('audio-status-text');
+    
+    if (show && viewerAudioConnected) {
+        audioStatusElement.style.display = 'flex';
+        
+        // Show active state if audio is currently being received
+        if (isActive) {
+            audioStatusElement.classList.add('active');
+            if (statusTextElement) {
+                statusTextElement.textContent = 'Viewer speaking...';
+            }
+        } else {
+            audioStatusElement.classList.remove('active');
+            if (statusTextElement) {
+                statusTextElement.textContent = 'Viewer audio connected';
+            }
+        }
+        
+        // Fade out the notification after 5 seconds if not active
+        if (!isActive) {
+            setTimeout(() => {
+                if (viewerAudioConnected) {
+                    // Keep it visible but make it semi-transparent
+                    audioStatusElement.style.opacity = '0.6';
+                }
+            }, 5000);
+        } else {
+            // Keep full opacity when active
+            audioStatusElement.style.opacity = '1';
+        }
+    } else {
+        audioStatusElement.style.display = 'none';
+        audioStatusElement.style.opacity = '1';
+        audioStatusElement.classList.remove('active');
+    }
+}
+
+// --- Audio Analysis for Viewer Speaking Detection ---
+let audioContext;
+let audioAnalyser;
+let audioDataArray;
+let audioLevelCheckInterval;
+
+function setupAudioAnalyser(audioStream) {
+    if (!window.AudioContext && !window.webkitAudioContext) {
+        console.warn('AudioContext not supported - audio level detection disabled');
+        return;
+    }
+    
+    try {
+        // Cleanup existing audio analysis if any
+        if (audioContext) {
+            clearInterval(audioLevelCheckInterval);
+            audioContext.close().catch(err => console.error('Error closing audio context:', err));
+            audioContext = null;
+            audioAnalyser = null;
+            audioDataArray = null;
+        }
+        
+        // Create audio context and analyser
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioContext.createMediaStreamSource(audioStream);
+        audioAnalyser = audioContext.createAnalyser();
+        audioAnalyser.fftSize = 256;
+        
+        source.connect(audioAnalyser);
+        
+        // Create data array for analysis
+        const bufferLength = audioAnalyser.frequencyBinCount;
+        audioDataArray = new Uint8Array(bufferLength);
+        
+        // Start monitoring audio levels
+        if (audioLevelCheckInterval) {
+            clearInterval(audioLevelCheckInterval);
+        }
+        
+        audioLevelCheckInterval = setInterval(checkAudioLevel, 100); // Check every 100ms
+        
+        console.log('Audio analyser setup complete');
+    } catch (error) {
+        console.error('Error setting up audio analyser:', error);
+    }
+}
+
+function checkAudioLevel() {
+    if (!audioAnalyser || !audioDataArray || !viewerAudioConnected) return;
+    
+    try {
+        audioAnalyser.getByteFrequencyData(audioDataArray);
+        
+        // Calculate average volume level
+        let sum = 0;
+        for (let i = 0; i < audioDataArray.length; i++) {
+            sum += audioDataArray[i];
+        }
+        const average = sum / audioDataArray.length;
+        
+        // Consider speaking if volume is above threshold (adjust as needed)
+        const SPEAKING_THRESHOLD = 25;
+        const isSpeaking = average > SPEAKING_THRESHOLD;
+        
+        // Update UI based on speaking status
+        showAudioStatus(true, isSpeaking);
+        
+        // For debugging
+        // console.log(`Audio level: ${average.toFixed(2)}`);
+    } catch (error) {
+        console.error('Error analyzing audio level:', error);
+    }
+}
+
+// --- Device Ready and Permissions ---
 function onDeviceReady() {
     console.log('Device ready event fired');
 
@@ -576,6 +765,8 @@ function onDeviceReady() {
 function requestCameraPermission() {
     if (cordova.plugins && cordova.plugins.permissions) {
         const permissions = cordova.plugins.permissions;
+        
+        // Check and request camera permission
         permissions.checkPermission(permissions.CAMERA, function(status) {
             if (!status.hasPermission) {
                 permissions.requestPermission(permissions.CAMERA, function(status) {
@@ -588,6 +779,21 @@ function requestCameraPermission() {
             }
         }, function() {
             alert('Error checking camera permission.');
+        });
+        
+        // Also check and request microphone permission for bi-directional audio
+        permissions.checkPermission(permissions.RECORD_AUDIO, function(status) {
+            if (!status.hasPermission) {
+                permissions.requestPermission(permissions.RECORD_AUDIO, function(status) {
+                    if (!status.hasPermission) {
+                        alert('Microphone permission is required for audio communication.');
+                    }
+                }, function() {
+                    alert('Microphone permission is required for audio communication.');
+                });
+            }
+        }, function() {
+            alert('Error checking microphone permission.');
         });
     } else {
         console.warn('Cordova Permissions plugin not available');
@@ -687,6 +893,7 @@ function ensureCameraPermissions() {
         if (window.cordova && cordova.plugins && cordova.plugins.permissions) {
             const permissions = cordova.plugins.permissions;
 
+            // Make sure we request all necessary permissions for bi-directional audio
             const requiredPermissions = [
                 permissions.CAMERA,
                 permissions.RECORD_AUDIO,

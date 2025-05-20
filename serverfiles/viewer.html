@@ -229,6 +229,52 @@
             color: #dc3545;
         }
 
+        #toggleAudioButton {
+            display: flex;
+            align-items: center;
+            background-color: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        #toggleAudioButton.active {
+            background-color: #28a745;
+        }
+
+        #toggleAudioButton:hover {
+            background-color: #5a6268;
+        }
+
+        #toggleAudioButton.active:hover {
+            background-color: #218838;
+        }
+
+        #audioIndicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-left: 5px;
+            background-color: #ccc;
+            transition: background-color 0.3s;
+        }
+
+        #audioIndicator.speaking {
+            background-color: #28a745;
+            box-shadow: 0 0 8px #28a745;
+        }
+
+        #audioIndicator.muted {
+            background-color: #dc3545;
+        }
+
+        #audioIndicator.enabled {
+            background-color: #ffc107;
+        }
+
         /* Modern media controls section */
         #mediaControls {
             margin-top: 20px;
@@ -277,6 +323,36 @@
             font-style: italic;
             flex-grow: 1;
         }
+
+        #audioControls {
+            display: flex;
+            align-items: center;
+            margin-left: 10px;
+        }
+
+        #toggleAudioButton {
+            display: flex;
+            align-items: center;
+            background-color: #17a2b8;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        #toggleAudioButton:hover {
+            background-color: #138496;
+        }
+
+        #audioIndicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-left: 5px;
+            background-color: #ccc;
+        }
     </style>
 </head>
 
@@ -304,6 +380,12 @@
             <button id="startClipButton" onclick="startClip()" disabled>Start Clip</button>
             <button id="endClipButton" onclick="endClip()" disabled>End Clip</button>
             <button id="screenshotButton" onclick="takeScreenshot()" disabled>Screenshot</button>
+            <div id="audioControls" style="display: flex; align-items: center; margin-left: 10px;">
+                <button id="toggleAudioButton" onclick="toggleAudio()" disabled>
+                    <span id="micIcon">🎙️</span> Enable Mic
+                </button>
+                <div id="audioIndicator" style="width: 20px; height: 20px; border-radius: 50%; margin-left: 5px; background-color: #ccc;"></div>
+            </div>
             <span id="clipStatus"></span>
         </div>
 
@@ -339,6 +421,15 @@
         let recordedChunks = [];
         let streamStartTime;
         let clipStartTime;
+
+        // Global variables for audio functionality
+        let localStream; // Will store local audio stream
+        let audioTrackAdded = false; // Flag to track if audio has been added
+        let audioContext;
+        let audioAnalyser;
+        let audioDataArray;
+        let isMicrophoneActive = false;
+        let audioAnalysisInterval;
 
         document.addEventListener('DOMContentLoaded', function () {
             const urlParams = new URLSearchParams(window.location.search);
@@ -628,24 +719,20 @@
                 if (event.streams && event.streams[0]) {
                     updateVideoDebugInfo("Using stream from event.streams[0]");
                     remoteVideo.srcObject = event.streams[0];
-                    // updateConnectionStatus('connected', 'Stream connected successfully!'); // Moved to oniceconnectionstatechange
-                    // reconnectAttempts = 0;
-                    // isReconnecting = false;
                 } else if (event.track) {
                     updateVideoDebugInfo("No stream available, creating new MediaStream");
                     if (!remoteVideo.srcObject) {
                         remoteVideo.srcObject = new MediaStream();
                     }
                     remoteVideo.srcObject.addTrack(event.track);
-                    // updateConnectionStatus('connected', 'Stream connected successfully!'); // Moved to oniceconnectionstatechange
-                    // reconnectAttempts = 0;
-                    // isReconnecting = false;
                 }
 
                 // Enable controls once the track is received and video is playing
                 remoteVideo.oncanplay = () => {
                     document.getElementById('startClipButton').disabled = false;
                     document.getElementById('screenshotButton').disabled = false;
+                    // Enable audio button when stream is established
+                    document.getElementById('toggleAudioButton').disabled = false;
                     updateVideoDebugInfo('Video can play, media controls enabled.');
                 };
             };
@@ -668,6 +755,8 @@
                     if (currentRole === 'host') { // Ensure host controls are visible and updated
                         document.getElementById('hostControls').style.display = 'block';
                     }
+                    // Enable audio toggle button when connection is established
+                    document.getElementById('toggleAudioButton').disabled = false;
                 } else if (peerConnection.iceConnectionState === 'failed') {
                     updateConnectionStatus('disconnected', 'Stream connection failed.');
                     handleConnectionFailure();
@@ -696,6 +785,17 @@
                 if (!sendSuccess) {
                     updateConnectionStatus('disconnected', 'Failed to send answer. Please try again.');
                     throw new Error('Failed to send answer via WebSocket.');
+                }
+                
+                // If we already had an active microphone before the reconnection, add it back
+                if (localStream && isMicrophoneActive) {
+                    localStream.getAudioTracks().forEach(track => {
+                        if (track.readyState === 'live') {
+                            peerConnection.addTrack(track, localStream);
+                            console.log('Re-added existing local audio track after connection');
+                            audioTrackAdded = true;
+                        }
+                    });
                 }
             } catch (error) {
                 updateVideoDebugInfo(`Error in offer/answer process: ${error.message}`);
@@ -765,6 +865,9 @@
                 console.log(`Sent hangup message via WebSocket (${currentRole}).`);
             }
 
+            // Clean up audio resources
+            stopLocalAudio();
+            
             if (peerConnection) {
                 peerConnection.close();
                 peerConnection = null;
@@ -787,6 +890,10 @@
             document.getElementById('startClipButton').disabled = true;
             document.getElementById('endClipButton').disabled = true;
             document.getElementById('screenshotButton').disabled = true;
+            document.getElementById('toggleAudioButton').disabled = true;
+            document.getElementById('toggleAudioButton').innerHTML = '🎙️ Enable Mic';
+            document.getElementById('toggleAudioButton').classList.remove('active');
+            document.getElementById('audioIndicator').className = '';
             document.getElementById('clipStatus').textContent = '';
 
             // For host, reset host UI elements if needed
@@ -1149,6 +1256,133 @@
             }
         }
 
+        // FR014: Bi-directional Audio Communication
+        async function toggleAudio() {
+            const toggleButton = document.getElementById('toggleAudioButton');
+            const micIcon = document.getElementById('micIcon');
+            const audioIndicator = document.getElementById('audioIndicator');
+            
+            // If microphone is currently active, disable it
+            if (isMicrophoneActive) {
+                stopLocalAudio();
+                toggleButton.textContent = '🎙️ Enable Mic';
+                toggleButton.classList.remove('active');
+                audioIndicator.className = '';
+                updateConnectionStatus('connected', 'Stream connected. Microphone disabled.');
+                return;
+            }
+            
+            try {
+                // Request microphone permission and get audio stream
+                updateConnectionStatus('connecting', 'Requesting microphone access...');
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    },
+                    video: false 
+                });
+                
+                // Set up audio level detection
+                setupAudioAnalyser(localStream);
+                
+                // Add audio track to peer connection if it exists
+                if (peerConnection && peerConnection.connectionState !== 'closed') {
+                    localStream.getAudioTracks().forEach(track => {
+                        peerConnection.addTrack(track, localStream);
+                        console.log('Added local audio track to peer connection');
+                    });
+                    audioTrackAdded = true;
+                } else {
+                    throw new Error('Cannot add audio track - no active connection');
+                }
+                
+                isMicrophoneActive = true;
+                toggleButton.innerHTML = '🎙️ Disable Mic';
+                toggleButton.classList.add('active');
+                audioIndicator.className = 'enabled';
+                updateConnectionStatus('connected', 'Stream connected. Microphone enabled!');
+                
+            } catch (error) {
+                console.error('Error enabling microphone:', error);
+                alert(`Could not enable microphone: ${error.message}`);
+                updateConnectionStatus('connected', `Microphone error: ${error.message}`);
+            }
+        }
+        
+        function setupAudioAnalyser(stream) {
+            if (!window.AudioContext && !window.webkitAudioContext) {
+                console.warn('AudioContext not supported - audio level indicator disabled');
+                return;
+            }
+            
+            try {
+                // Create audio context and analyser
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(stream);
+                audioAnalyser = audioContext.createAnalyser();
+                audioAnalyser.fftSize = 256;
+                
+                source.connect(audioAnalyser);
+                
+                // Create data array for analysis
+                const bufferLength = audioAnalyser.frequencyBinCount;
+                audioDataArray = new Uint8Array(bufferLength);
+                
+                // Start monitoring audio levels
+                if (audioAnalysisInterval) {
+                    clearInterval(audioAnalysisInterval);
+                }
+                
+                audioAnalysisInterval = setInterval(checkAudioLevel, 100);
+            } catch (error) {
+                console.error('Error setting up audio analyser:', error);
+            }
+        }
+        
+        function checkAudioLevel() {
+            if (!audioAnalyser || !audioDataArray || !isMicrophoneActive) return;
+            
+            const audioIndicator = document.getElementById('audioIndicator');
+            
+            audioAnalyser.getByteFrequencyData(audioDataArray);
+            
+            // Calculate audio level - average of all frequency bins
+            let sum = audioDataArray.reduce((acc, val) => acc + val, 0);
+            let average = sum / audioDataArray.length;
+            
+            // Threshold for "speaking" can be adjusted
+            if (average > 30) {
+                audioIndicator.className = 'speaking';
+            } else {
+                audioIndicator.className = 'enabled';
+            }
+        }
+        
+        function stopLocalAudio() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => {
+                    track.stop();
+                });
+                localStream = null;
+            }
+            
+            if (audioAnalysisInterval) {
+                clearInterval(audioAnalysisInterval);
+                audioAnalysisInterval = null;
+            }
+            
+            if (audioContext) {
+                audioContext.close().catch(err => console.error('Error closing audio context:', err));
+                audioContext = null;
+                audioAnalyser = null;
+                audioDataArray = null;
+            }
+            
+            isMicrophoneActive = false;
+            audioTrackAdded = false;
+        }
     </script>
 </body>
 

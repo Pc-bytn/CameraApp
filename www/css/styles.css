@@ -58,6 +58,26 @@ body, html {
     background-color: #fff;
 }
 
+/* Audio status indicator styles */
+#audio-status {
+    transition: opacity 0.5s ease-in-out;
+    opacity: 1;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+}
+
+#audio-status.active {
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+
+/* Existing styles continued */
 #send-btn {
     position: absolute;
     bottom: 30px;
