@@ -1128,8 +1128,7 @@
             
             while ((!wsServerReady || !nginxServerReady) && attempt < maxAttempts) {
                 try {
-                    const wsUrlObj = new URL(webSocketSignalingUrl);
-                    const serverCheckResponse = await fetch(`${wsUrlObj.protocol === 'wss:' ? 'https:' : 'http:'}//${wsUrlObj.host}/sys/StartServers.php`);
+                    const serverCheckResponse = await fetch('StartServers.php');
                     serverCheckResult = await serverCheckResponse.json();
                     
                     // Check WebSocket server status
