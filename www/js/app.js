@@ -394,6 +394,28 @@ function setupPeerConnection() {
             console.log(`Signaling state: ${peerConnection.signalingState}`);
         };
 
+        // Add handler for incoming audio tracks from viewer
+        peerConnection.ontrack = event => {
+            console.log(`Received track from viewer: ${event.track.kind}`);
+            if (event.track.kind === 'audio') {
+                // Create a MediaStream for the received audio track
+                const remoteAudioStream = new MediaStream();
+                remoteAudioStream.addTrack(event.track);
+                // Attach to audio element
+                const remoteAudio = document.getElementById('remote-audio');
+                if (remoteAudio) {
+                    remoteAudio.srcObject = remoteAudioStream;
+                    remoteAudio.muted = false;
+                    remoteAudio.play()
+                        .then(() => console.log('Remote audio playback started'))
+                        .catch(e => console.error('Error playing remote audio:', e));
+                    alert('Viewer audio connected.');
+                } else {
+                    console.error('Remote audio element not found');
+                }
+            }
+        };
+
         // Reset buffer and flag
         iceCandidateBuffer = [];
         answerReceived = false;
