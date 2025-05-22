@@ -76,6 +76,7 @@
         <h1>Stream Your Camera</h1>
         <p>Your camera feed will be streamed to the host.</p>
         <video id="localVideo" autoplay playsinline muted></video>
+        <audio id="remote-audio" autoplay playsinline></audio>
         <div style="display: flex; align-items: center;">
             <button id="startStreamBtn">Start Streaming</button>
             <button id="stopStreamBtn" disabled>Stop Streaming</button>
@@ -146,6 +147,7 @@
                     audio: true
                 });
                 localVideo.srcObject = localStream;
+                localVideo.muted = true;
             } catch (e) {
                 // Fallback if facingMode fails
                 if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
@@ -356,6 +358,27 @@
             }
             localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
+            // Add handler for incoming audio tracks from viewer
+            peerConnection.ontrack = event => {
+                
+                if (event.track.kind === 'audio') {
+                    
+                    const remoteAudioStream = new MediaStream();
+                    remoteAudioStream.addTrack(event.track);
+                    const remoteAudio = document.getElementById('remote-audio');
+                    if (remoteAudio) {
+                        remoteAudio.srcObject = remoteAudioStream;
+                        remoteAudio.muted = false;
+                        remoteAudio.play()
+                            .then(() => console.log('Remote audio playback started'))
+                            .catch(e => console.error('Error playing remote audio:', e));
+                        statusDiv.textContent = 'Viewer audio connected.';
+                    } else {
+                        console.error('Remote audio element not found');
+                    }
+                }
+            };
+
             peerConnection.onicecandidate = event => {
                 if (event.candidate) {
                     if (answerReceived) { // Only send if answer has been processed
@@ -391,7 +414,7 @@
         async function createAndSendOffer() {
             try {
                 if (!peerConnection) throw new Error("PeerConnection does not exist.");
-                const offer = await peerConnection.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+                const offer = await peerConnection.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
                 await peerConnection.setLocalDescription(offer);
 
                 statusDiv.textContent = 'Sending stream offer to host...';
@@ -412,12 +435,12 @@
 
         async function switchCamera() {
             if (!localStream) {
-                console.warn('No local stream available to switch camera.');
+                alert('No local stream available to switch camera.');
                 return;
             }
 
             if (switchCamera.isRunning) {
-                console.log('Camera switch already in progress. Please wait.');
+                alert('Camera switch already in progress. Please wait.');
                 return;
             }
             switchCamera.isRunning = true;
