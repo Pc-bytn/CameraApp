@@ -339,6 +339,7 @@
         let recordedChunks = [];
         let streamStartTime;
         let clipStartTime;
+        let localAudioStream; // Added for local audio
 
         document.addEventListener('DOMContentLoaded', function () {
             const urlParams = new URLSearchParams(window.location.search);
@@ -604,7 +605,31 @@
             peerConnection = new RTCPeerConnection(peerConnectionConfig);
 
             // Add debug tracking
-            updateVideoDebugInfo("PeerConnection created, waiting for tracks...");
+            updateVideoDebugInfo("PeerConnection created, attempting to add local audio and process offer...");
+
+            // 1. Attempt to get local audio and add tracks
+            try {
+                if (!localAudioStream || localAudioStream.getTracks().every(track => track.readyState === 'ended')) {
+                    updateVideoDebugInfo("Requesting local audio stream...");
+                    localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                    updateVideoDebugInfo("Local audio stream obtained.");
+                }
+                if (localAudioStream) {
+                    localAudioStream.getAudioTracks().forEach(track => {
+                        if (peerConnection.getSenders().find(sender => sender.track === track)) {
+                            updateVideoDebugInfo(`Local audio track already added: ${track.label || track.id}`);
+                        } else {
+                            peerConnection.addTrack(track, localAudioStream);
+                            updateVideoDebugInfo(`Local audio track added: ${track.label || track.id}`);
+                        }
+                    });
+                }
+            } catch (err) {
+                updateVideoDebugInfo(`Error getting local audio: ${err.message}`);
+                console.error("Error getting local audio stream:", err);
+                alert(`Could not get microphone access: ${err.message}. Proceeding without sending audio.`);
+                // Optionally, you might want to stop the connection attempt if audio is mandatory
+            }
 
             peerConnection.ontrack = event => {
                 updateVideoDebugInfo(`Track received: ${event.track.kind}`);
@@ -690,7 +715,7 @@
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 console.log('Local description (answer) created.');
-                updateVideoDebugInfo("Local description (answer) created successfully");
+                updateVideoDebugInfo("Local description (answer) created successfully, now includes local audio info if available.");
 
                 const sendSuccess = sendSignalingMessage({ type: 'answer', answer: answer });
                 if (!sendSuccess) {
@@ -766,9 +791,22 @@
             }
 
             if (peerConnection) {
+                // Remove tracks before closing to ensure proper cleanup
+                peerConnection.getSenders().forEach(sender => {
+                    if (sender.track) {
+                        sender.track.stop(); // Stop the track
+                    }
+                });
                 peerConnection.close();
                 peerConnection = null;
             }
+
+            if (localAudioStream) {
+                localAudioStream.getTracks().forEach(track => track.stop());
+                localAudioStream = null;
+                updateVideoDebugInfo("Local audio stream stopped and microphone released.");
+            }
+
             if (websocket) {
                 if (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING) {
                     websocket.onclose = null;
