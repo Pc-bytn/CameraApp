@@ -255,6 +255,7 @@ async function initializeMediaStream() {
             const localVideo = document.getElementById('local-video');
             if (localVideo) {
                 localVideo.srcObject = localStream;
+                localVideo.muted = true;
             }
         } catch (e) {
             // Try fallback if facingMode ideal fails
